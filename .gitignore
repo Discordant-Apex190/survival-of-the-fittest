@@ -10,3 +10,10 @@ wheels/
 .venv
 
 secrets.env
+
+/ai_info
+
+# Runtime artifacts
+/data/
+
+uv.lock
