@@ -11,6 +11,8 @@ from loguru import logger
 from backend.api.routes.creatures import router as creatures_router
 from backend.api.routes.fights import router as fights_router
 from backend.api.routes.health import router as health_router
+from backend.api.routes.analytics import router as analytics_router
+from backend.api.routes.betting import router as betting_router
 from backend.api.routes.simulation import router as simulation_router
 from backend.api.routes.ws import router as ws_router
 from backend.core.config import get_settings
@@ -46,6 +48,8 @@ def create_app() -> FastAPI:
     app.include_router(creatures_router)
     app.include_router(fights_router)
     app.include_router(health_router)
+    app.include_router(analytics_router)
+    app.include_router(betting_router)
     app.include_router(simulation_router)
     app.include_router(ws_router)
 

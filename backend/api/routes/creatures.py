@@ -78,6 +78,19 @@ class GenerateCreatureResponse(BaseModel):
     graph_state: dict
 
 
+class LineageNode(BaseModel):
+    id: str
+    name: str
+    tier: str
+    element: str
+    generation: int
+    wins: int
+    losses: int
+    status: str
+    parent_id: str | None
+    rival_of: str | None
+
+
 # ---------------------------------------------------------------------------
 # POST /creatures/generate
 # ---------------------------------------------------------------------------
@@ -146,6 +159,34 @@ def list_creatures(
             status=c.status,
             stats=c.stats,
             fighting_style=c.fighting_style,
+        )
+        for c in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /creatures/lineage  — must be before /{creature_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/lineage", response_model=list[LineageNode])
+def get_lineage(
+    session: Annotated[Session, Depends(get_session)],
+) -> list[LineageNode]:
+    """Return all creatures with parent/rival edges for tree rendering."""
+    rows = session.exec(select(Creature)).all()
+    return [
+        LineageNode(
+            id=c.id,
+            name=c.name,
+            tier=c.tier,
+            element=c.element,
+            generation=c.generation,
+            wins=c.wins,
+            losses=c.losses,
+            status=c.status,
+            parent_id=c.parent_id,
+            rival_of=c.rival_of,
         )
         for c in rows
     ]

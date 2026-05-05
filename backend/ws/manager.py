@@ -18,8 +18,13 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._connections: list[WebSocket] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def connect(self, websocket: WebSocket) -> None:
+        # Capture the running event loop the first time a client connects.
+        # This is always called from an async context, so get_running_loop() is safe.
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
         await websocket.accept()
         self._connections.append(websocket)
         logger.bind(stage="ws_connect", total=len(self._connections)).info(
@@ -46,16 +51,17 @@ class ConnectionManager:
             self.disconnect(ws)
 
     def broadcast_sync(self, event: dict[str, Any]) -> None:
-        """Fire-and-forget broadcast from sync context (e.g. LangGraph node).
+        """Broadcast from a sync context (threadpool thread or BackgroundTask).
 
-        Creates a new event loop task if a running loop exists, otherwise
-        schedules via asyncio.run. Safe to call from BackgroundTask context.
+        Uses run_coroutine_threadsafe to schedule the coroutine on the main
+        event loop that owns all WebSocket connections.  If no client has ever
+        connected the loop reference is None and the call is a safe no-op.
         """
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.broadcast(event))
-        except RuntimeError:
-            asyncio.run(self.broadcast(event))
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            # No clients have connected yet — nothing to broadcast to.
+            return
+        asyncio.run_coroutine_threadsafe(self.broadcast(event), loop)
 
     @property
     def connection_count(self) -> int:

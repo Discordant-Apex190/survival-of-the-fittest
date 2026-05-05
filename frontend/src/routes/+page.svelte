@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { browser } from '$app/environment';
   import { z } from 'zod';
   import { get, post } from '$lib/api/client';
   import { CreatureSummarySchema } from '$lib/schemas/creature';
@@ -11,24 +12,141 @@
   import type { UpcomingFight } from '$lib/schemas/fight';
   import Arena from '$lib/components/Arena.svelte';
 
+  // ---------------------------------------------------------------------------
+  // Betting schemas
+  // ---------------------------------------------------------------------------
+
+  const BettingStateSchema = z.union([
+    z.object({
+      fight_id: z.string(),
+      creature_a_id: z.string(),
+      creature_a_name: z.string(),
+      creature_a_element: z.string(),
+      creature_b_id: z.string(),
+      creature_b_name: z.string(),
+      creature_b_element: z.string(),
+      prob_a: z.number(),
+      prob_b: z.number(),
+      votes_a: z.number(),
+      votes_b: z.number(),
+      total_votes: z.number(),
+    }),
+    z.object({ message: z.string() }),
+  ]);
+  type BettingState = z.infer<typeof BettingStateSchema>;
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+
   let ticking = false;
   let tickError = '';
   let upcoming: UpcomingFight | null = null;
 
+  let betting: BettingState | null = null;
+  let myVote: string | null = null;   // creature_id I voted for this fight
+  let votedFightId: string | null = null;
+  let voteLoading = false;
+  let betPollInterval: ReturnType<typeof setInterval> | null = null;
+  let isBetPolling = false;
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  function betHasState(b: BettingState | null): b is Exclude<BettingState, { message: string }> {
+    return b !== null && !('message' in b);
+  }
+
+  function upcomingHasState(u: UpcomingFight | null): u is Exclude<UpcomingFight, { message: string }> {
+    return u !== null && !('message' in u);
+  }
+
+  $: activeBet = betHasState(betting) ? betting : null;
+  $: activeUpcoming = upcomingHasState(upcoming) ? upcoming : null;
+
+  $: votePct = activeBet && activeBet.total_votes > 0
+    ? Math.round((activeBet.votes_a / activeBet.total_votes) * 100)
+    : 50;
+
+  async function loadBetting() {
+    const r = await get('/betting/current', BettingStateSchema);
+    r.match((d) => { betting = d; }, () => {});
+  }
+
+  function startBettingPolling() {
+    if (isBetPolling) return;
+    isBetPolling = true;
+    void loadBetting();
+    betPollInterval = setInterval(loadBetting, 5_000);
+  }
+
+  function stopBettingPolling() {
+    if (betPollInterval) {
+      clearInterval(betPollInterval);
+      betPollInterval = null;
+    }
+    isBetPolling = false;
+    betting = null;
+  }
+
+  $: if (browser) {
+    if ($fightStore.active) {
+      startBettingPolling();
+    } else {
+      stopBettingPolling();
+    }
+  }
+
+  async function castVote(creatureId: string) {
+    if (!activeBet || voteLoading) return;
+    voteLoading = true;
+    const r = await post(
+      '/betting/vote',
+      { fight_id: activeBet.fight_id, creature_id: creatureId },
+      z.object({ fight_id: z.string(), creature_id: z.string(),
+                  votes_a: z.number(), votes_b: z.number(), total_votes: z.number() }),
+    );
+    r.match(
+      (d) => {
+        myVote = creatureId;
+        votedFightId = activeBet!.fight_id;
+        // Update tally immediately without re-fetching
+        if (activeBet) {
+          betting = {
+            ...activeBet,
+            votes_a: creatureId === activeBet.creature_a_id ? d.votes_a : activeBet.votes_a,
+            votes_b: creatureId === activeBet.creature_b_id ? d.votes_b : activeBet.votes_b,
+            total_votes: d.total_votes,
+          };
+        }
+      },
+      () => {},
+    );
+    voteLoading = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tick / leaderboard
+  // ---------------------------------------------------------------------------
+
   onMount(async () => {
-    // Seed leaderboard from REST
     const result = await get('/creatures?limit=20&status=active', z.array(CreatureSummarySchema));
     result.match(
       (creatures) => leaderboardStore.set(creatures),
       (e) => console.warn('Leaderboard load failed:', e.message),
     );
 
-    // Load upcoming fight
     const upResult = await get('/fights/upcoming', UpcomingFightSchema);
     upResult.match(
-      (data) => { upcoming = 'message' in data ? null : data; },
+      (data) => { upcoming = data; },
       () => {},
     );
+
+  });
+
+  onDestroy(() => {
+    stopBettingPolling();
   });
 
   async function runTick() {
@@ -41,12 +159,14 @@
     );
     ticking = false;
 
-    // Refresh leaderboard after tick
     const lb = await get('/creatures?limit=20&status=active', z.array(CreatureSummarySchema));
     lb.match((creatures) => leaderboardStore.set(creatures), () => {});
+
+    if ($fightStore.active) {
+      await loadBetting();
+    }
   }
 
-  // Derive display lists reactively
   $: recentEvents = $fightStore.events.slice(-20).reverse();
 </script>
 
@@ -111,20 +231,67 @@
     </div>
   </section>
 
-  <!-- Right — Commentary + Upcoming -->
+  <!-- Right — Betting + Commentary + Upcoming -->
   <aside class="sidebar-right">
-    {#if upcoming}
+    {#if activeUpcoming}
       <div class="panel-title">Next Fight</div>
       <div class="upcoming-card">
-        <div class="up-name" style="color:{elementColor(String(upcoming.creature_a.element ?? ''))}">
-          {String(upcoming.creature_a.name ?? '?')}
+        <div class="up-name" style="color:{elementColor(String(activeUpcoming.creature_a.element ?? ''))}">
+          {String(activeUpcoming.creature_a.name ?? '?')}
         </div>
-        <div class="up-prob">{(upcoming.prob_a * 100).toFixed(0)}%</div>
+        <div class="up-prob">{(activeUpcoming.prob_a * 100).toFixed(0)}%</div>
         <div class="up-vs">vs</div>
-        <div class="up-prob">{(upcoming.prob_b * 100).toFixed(0)}%</div>
-        <div class="up-name" style="color:{elementColor(String(upcoming.creature_b.element ?? ''))}">
-          {String(upcoming.creature_b.name ?? '?')}
+        <div class="up-prob">{(activeUpcoming.prob_b * 100).toFixed(0)}%</div>
+        <div class="up-name" style="color:{elementColor(String(activeUpcoming.creature_b.element ?? ''))}">
+          {String(activeUpcoming.creature_b.name ?? '?')}
         </div>
+      </div>
+    {/if}
+
+    <!-- Betting panel -->
+    {#if activeBet}
+      <div class="panel-title">Spectator Bet</div>
+      <div class="bet-panel">
+        <div class="bet-row">
+          <button
+            class="bet-btn"
+            class:voted={myVote === activeBet.creature_a_id && votedFightId === activeBet.fight_id}
+            disabled={voteLoading || (votedFightId === activeBet.fight_id)}
+            style="color:{elementColor(activeBet.creature_a_element)}"
+            on:click={() => castVote(activeBet!.creature_a_id)}
+          >
+            {activeBet.creature_a_name}
+          </button>
+          <span class="bet-sep">vs</span>
+          <button
+            class="bet-btn"
+            class:voted={myVote === activeBet.creature_b_id && votedFightId === activeBet.fight_id}
+            disabled={voteLoading || (votedFightId === activeBet.fight_id)}
+            style="color:{elementColor(activeBet.creature_b_element)}"
+            on:click={() => castVote(activeBet!.creature_b_id)}
+          >
+            {activeBet.creature_b_name}
+          </button>
+        </div>
+        <!-- Tally bar -->
+        <div class="tally-bar">
+          <div
+            class="tally-a"
+            style="width:{votePct}%; background:{elementColor(activeBet.creature_a_element)}33"
+          ></div>
+        </div>
+        <div class="tally-labels">
+          <span style="color:{elementColor(activeBet.creature_a_element)}">{activeBet.votes_a}</span>
+          <span class="tally-total">{activeBet.total_votes} votes</span>
+          <span style="color:{elementColor(activeBet.creature_b_element)}">{activeBet.votes_b}</span>
+        </div>
+        {#if votedFightId === activeBet.fight_id && myVote}
+          <div class="voted-note">
+            Voted for <span style="color:{myVote === activeBet.creature_a_id ? elementColor(activeBet.creature_a_element) : elementColor(activeBet.creature_b_element)}">
+              {myVote === activeBet.creature_a_id ? activeBet.creature_a_name : activeBet.creature_b_name}
+            </span>
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -311,5 +478,60 @@
     background: var(--card);
     border-radius: 0 4px 4px 0;
     line-height: 1.5;
+  }
+
+  /* Betting panel */
+  .bet-panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .bet-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .bet-btn {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 5px 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: border-color 0.1s, background 0.1s;
+    cursor: pointer;
+  }
+  .bet-btn:hover:not(:disabled) { border-color: currentColor; background: var(--card); }
+  .bet-btn:disabled { opacity: 0.4; cursor: default; }
+  .bet-btn.voted { border-color: currentColor; background: var(--card); }
+  .bet-sep { font-size: 9px; color: var(--text-dim); flex-shrink: 0; }
+
+  .tally-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .tally-a { height: 100%; border-radius: 2px; min-width: 2px; transition: width 0.3s; }
+  .tally-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--text-mid);
+  }
+  .tally-total { color: var(--text-dim); font-size: 8px; }
+  .voted-note {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-align: center;
   }
 </style>

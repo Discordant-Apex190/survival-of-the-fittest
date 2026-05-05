@@ -14,6 +14,7 @@ from backend.simulation.engine import (
     TickResult,
     run_tick,
 )
+from backend.ws.manager import manager
 
 router = APIRouter(prefix="/simulation", tags=["simulation"])
 
@@ -163,5 +164,31 @@ def tick(
         background_tasks.add_task(
             _run_commentary_background, session, "evolution", snapshot
         )
+
+    # Broadcast updated leaderboard so connected clients stay in sync
+    top_creatures = session.exec(
+        select(Creature)
+        .where(Creature.status == "active")
+        .order_by(Creature.wins.desc())  # type: ignore[arg-type]
+        .limit(20)
+    ).all()
+    manager.broadcast_sync({
+        "type": "leaderboard_update",
+        "data": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "tier": c.tier,
+                "element": c.element,
+                "generation": c.generation,
+                "wins": c.wins,
+                "losses": c.losses,
+                "status": c.status,
+                "stats": c.stats,
+                "fighting_style": c.fighting_style,
+            }
+            for c in top_creatures
+        ],
+    })
 
     return _serialize_tick(result)
