@@ -17,6 +17,9 @@ class GraphState(TypedDict):
     taunts: dict[str, list[str]] | None
     visual_descriptor: dict[str, Any] | None
     evolution_decision: dict[str, Any] | None
+    evolution_analysis: dict[str, Any] | None
+    evolution_new_ability: dict[str, Any] | None
+    evolution_updated_lore: str | None
     counter_design: dict[str, Any] | None
 
     trigger_event: str | None

@@ -17,3 +17,6 @@ secrets.env
 /data/
 
 uv.lock
+
+/.github/copilot-instructions.md
+/.github/instructions/

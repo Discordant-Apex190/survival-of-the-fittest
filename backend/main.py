@@ -8,6 +8,8 @@ from loguru import logger
 
 from backend.api.routes.creatures import router as creatures_router
 from backend.api.routes.health import router as health_router
+from backend.api.routes.simulation import router as simulation_router
+from backend.api.routes.ws import router as ws_router
 from backend.core.config import get_settings
 from backend.core.logging import configure_logging
 from backend.db import models  # noqa: F401
@@ -40,6 +42,8 @@ def create_app() -> FastAPI:
 
     app.include_router(creatures_router)
     app.include_router(health_router)
+    app.include_router(simulation_router)
+    app.include_router(ws_router)
 
     @app.get("/")
     def root() -> dict[str, str]:
