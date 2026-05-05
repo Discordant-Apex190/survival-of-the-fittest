@@ -1,22 +1,38 @@
-# Python-generated files
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[oc]
-build/
 dist/
 wheels/
 *.egg-info
-
-# Virtual environments
 .venv
 
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+htmlcov/
+.coverage
+
+# ── S
+ecrets & local config ───────────────────────────────────────────────────
 secrets.env
 
-/ai_info
-
-# Runtime artifacts
+# ── Runtime artifacts (DB, audio, recordings) ────────────────────────────────
 /data/
 
-uv.lock
+# ── Frontend ─────────────────────────────────────────────────────────────────
+/frontend/node_modules/
+/frontend/.svelte-kit/
+/frontend/build/
+/frontend/.env
+/frontend/.env.local
 
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Project-specific ignores ─────────────────────────────────────────────────
+/ai_info
 /.github/copilot-instructions.md
 /.github/instructions/
+/.claude

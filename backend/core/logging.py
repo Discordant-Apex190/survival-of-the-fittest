@@ -21,6 +21,8 @@ class InterceptHandler(logging.Handler):
 
 def configure_logging(log_level: str) -> None:
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+    # Silence third-party loggers that are too chatty
+    logging.getLogger("transitions").setLevel(logging.WARNING)
 
     logger.remove()
     logger.add(

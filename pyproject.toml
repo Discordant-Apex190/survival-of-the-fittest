@@ -14,7 +14,7 @@ dependencies = [
 	"shortuuid>=1.0.13",
 	"sqlmodel>=0.0.24",
 	"transitions>=0.9.3",
-	"uvicorn>=0.35.0",
+	"uvicorn[standard]>=0.35.0",
 ]
 
 [project.optional-dependencies]

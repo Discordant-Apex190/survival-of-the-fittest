@@ -12,10 +12,11 @@ from sqlmodel import Session, select
 
 from backend.core.config import Settings
 from backend.db.models import Ability, Creature, Fight, FightEvent
-from backend.fight.engine import run_fight
+from backend.fight.engine import compute_win_probability, run_fight
 from backend.graphs.creature_factory import run_creature_factory_graph
 from backend.graphs.evolution import run_evolution_graph
 from backend.graphs.rival import run_rival_graph
+from backend.ws.manager import manager
 
 # Tier generation weights for auto-population
 _TIER_WEIGHTS = [
@@ -217,6 +218,21 @@ def step_fight(
     abilities_a = _load_abilities(session, a_id)
     abilities_b = _load_abilities(session, b_id)
 
+    fight_id = shortuuid.uuid()
+    prob_a = compute_win_probability(a_dict, b_dict)
+    manager.broadcast_sync({
+        "type": "fight_start",
+        "fight_id": fight_id,
+        "creature_a": {
+            "id": a.id, "name": a.name, "tier": a.tier, "element": a.element, "stats": a.stats
+        },
+        "creature_b": {
+            "id": b.id, "name": b.name, "tier": b.tier, "element": b.element, "stats": b.stats
+        },
+        "prob_a": prob_a,
+        "prob_b": round(1 - prob_a, 4),
+    })
+
     outcome = run_fight(
         a_dict,
         b_dict,
@@ -225,7 +241,19 @@ def step_fight(
         seed=seed or shortuuid.uuid(),
     )
 
-    fight_id = shortuuid.uuid()
+    for evt in outcome.events:
+        manager.broadcast_sync({
+            "type": "fight_event",
+            "fight_id": fight_id,
+            "turn": evt.turn,
+            "event_type": evt.event_type,
+            "actor_id": evt.actor_id,
+            "target_id": evt.target_id,
+            "ability_name": evt.ability_name,
+            "damage": evt.damage,
+            "hp_remaining": evt.hp_remaining,
+        })
+
     fight = Fight(
         id=fight_id,
         creature_a_id=a_id,
@@ -253,6 +281,12 @@ def step_fight(
         )
 
     session.commit()
+
+    manager.broadcast_sync({
+        "type": "fight_end",
+        "fight_id": fight_id,
+        "winner_id": outcome.winner_id,
+    })
 
     logger.bind(
         stage="fight",

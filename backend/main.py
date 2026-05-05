@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from backend.api.routes.creatures import router as creatures_router
+from backend.api.routes.fights import router as fights_router
 from backend.api.routes.health import router as health_router
 from backend.api.routes.simulation import router as simulation_router
 from backend.api.routes.ws import router as ws_router
@@ -41,9 +44,14 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(creatures_router)
+    app.include_router(fights_router)
     app.include_router(health_router)
     app.include_router(simulation_router)
     app.include_router(ws_router)
+
+    audio_dir = Path(settings.audio_dir)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/audio", StaticFiles(directory=str(audio_dir)), name="audio")
 
     @app.get("/")
     def root() -> dict[str, str]:
