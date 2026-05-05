@@ -22,6 +22,11 @@ class Settings(BaseSettings):
 
     google_api_key: str = Field(default="", repr=False)
     cartesia_api_key: str = Field(default="", repr=False)
+    gemini_model: str = "gemini-3.1-flash-lite-preview"
+    cartesia_tts_model: str = "sonic-3"
+    cartesia_voice_id: str = "f786b574-daa5-4673-aa0c-cbe3e8534c02"
+    cartesia_api_version: str = "2024-11-13"
+    cartesia_language: str = "en"
 
     min_population: int = 12
     max_population: int = 30

@@ -3,9 +3,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from random import Random
+from threading import Lock
+from time import monotonic, sleep
 from typing import Any, Protocol
 
+import httpx
+import orjson
 from loguru import logger
+
+from backend.core.config import get_settings
 
 # Imported here to cap mock evolution boosts — no circular dep (validators doesn't import gemini)
 _TIER_MAX_SINGLE: dict[str, int] = {
@@ -80,6 +86,310 @@ class GeminiProvider(Protocol):
         narrative_threads: list[str],
         simulation_snapshot: dict[str, Any],
     ) -> list[str]: ...
+
+
+class RealGeminiProvider:
+    """HTTP adapter for Gemini API with structured JSON prompts."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        min_interval_s: float = 0.5,
+        max_retries: int = 3,
+        base_backoff_s: float = 0.6,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.min_interval_s = min_interval_s
+        self.max_retries = max_retries
+        self.base_backoff_s = base_backoff_s
+        self._lock = Lock()
+        self._next_allowed_at = 0.0
+        self._fallback = MockGeminiProvider()
+
+    def _respect_rate_limit(self) -> None:
+        with self._lock:
+            now = monotonic()
+            wait_s = max(0.0, self._next_allowed_at - now)
+            self._next_allowed_at = max(self._next_allowed_at, now) + self.min_interval_s
+        if wait_s > 0:
+            sleep(wait_s)
+
+    def _retry_wait(self, attempt: int, retry_after: str | None) -> float:
+        if retry_after:
+            try:
+                return max(float(retry_after), 0.0)
+            except ValueError:
+                pass
+        # Lightweight jitter: 85%-115% around exponential backoff.
+        jitter = Random(f"{self.model}:{attempt}:jitter").uniform(0.85, 1.15)
+        return self.base_backoff_s * (2**attempt) * jitter
+
+    def _call_model(self, prompt: str, *, json_mode: bool) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+        payload: dict[str, Any] = {
+            "contents": [{"parts": [{"text": prompt}]}],
+        }
+        if json_mode:
+            payload["generationConfig"] = {"responseMimeType": "application/json"}
+
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=45.0) as client:
+            for attempt in range(self.max_retries + 1):
+                self._respect_rate_limit()
+                resp = client.post(url, headers=headers, json=payload)
+                if resp.status_code == 429 and attempt < self.max_retries:
+                    wait_s = self._retry_wait(attempt, resp.headers.get("Retry-After"))
+                    logger.bind(
+                        stage="gemini_retry",
+                        model=self.model,
+                        attempt=attempt + 1,
+                        wait_s=round(wait_s, 2),
+                    ).warning("gemini | rate limited, retrying")
+                    sleep(wait_s)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+
+        candidates = data.get("candidates") or []
+        if not candidates:
+            raise ValueError("Gemini returned no candidates")
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if not parts:
+            raise ValueError("Gemini returned empty content parts")
+        text = parts[0].get("text", "")
+        if not text:
+            raise ValueError("Gemini returned empty text")
+        return text
+
+    def _call_json(self, task: str, prompt: str) -> Any:
+        try:
+            text = self._call_model(prompt, json_mode=True)
+            return orjson.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.bind(stage="gemini_json_fallback", task=task, error=str(exc)).warning(
+                "gemini | json call failed, using mock fallback"
+            )
+            raise
+
+    def generate_concept(self, seed_params: dict[str, Any]) -> dict[str, Any]:
+        prompt = (
+            "Generate a combat creature concept. Return ONLY JSON with keys: "
+            "name,lore,personality,fighting_style,visual_descriptor,behavior_weights. "
+            "behavior_weights must include attack, defend, ability as floats that sum near 1. "
+            f"Seed params: {orjson.dumps(seed_params).decode()}"
+        )
+        try:
+            out = self._call_json("generate_concept", prompt)
+            return {
+                "name": str(out["name"]),
+                "lore": str(out["lore"]),
+                "personality": str(out["personality"]),
+                "fighting_style": str(out["fighting_style"]),
+                "visual_descriptor": dict(out["visual_descriptor"]),
+                "behavior_weights": dict(out["behavior_weights"]),
+            }
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_concept(seed_params)
+
+    def generate_stats(
+        self, seed_params: dict[str, Any], concept: dict[str, Any]
+    ) -> GeneratedStats:
+        prompt = (
+            "Generate balanced combat stats and abilities. Return ONLY JSON with keys stats and "
+            "abilities. stats keys: health,attack,defense,speed (integers). "
+            "abilities is a list of objects with "
+            "name,type,energy_cost,cooldown,effect,description. "
+            "Obey provided tier budget. "
+            f"Seed params: {orjson.dumps(seed_params).decode()} "
+            f"Concept: {orjson.dumps(concept).decode()}"
+        )
+        try:
+            out = self._call_json("generate_stats", prompt)
+            return GeneratedStats(stats=dict(out["stats"]), abilities=list(out["abilities"]))
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_stats(seed_params, concept)
+
+    def generate_taunts(
+        self, seed_params: dict[str, Any], concept: dict[str, Any]
+    ) -> dict[str, list[str]]:
+        prompt = (
+            "Generate short taunts. Return ONLY JSON object with triggers "
+            "intro,ability,win,loss,ko. "
+            "Each value must be a list of 1-2 short lines. "
+            f"Seed params: {orjson.dumps(seed_params).decode()} "
+            f"Concept: {orjson.dumps(concept).decode()}"
+        )
+        try:
+            out = self._call_json("generate_taunts", prompt)
+            return {k: list(v) for k, v in dict(out).items()}
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_taunts(seed_params, concept)
+
+    def decide_evolution(
+        self, parent_creature: dict[str, Any], analysis: dict[str, Any]
+    ) -> dict[str, Any]:
+        prompt = (
+            "Decide evolution changes. Return ONLY JSON with stat_boosts (object), "
+            "new_ability_slot (boolean), reasoning (string). "
+            f"Parent: {orjson.dumps(parent_creature).decode()} "
+            f"Analysis: {orjson.dumps(analysis).decode()}"
+        )
+        try:
+            out = self._call_json("decide_evolution", prompt)
+            return {
+                "stat_boosts": dict(out.get("stat_boosts", {})),
+                "new_ability_slot": bool(out.get("new_ability_slot", False)),
+                "reasoning": str(out.get("reasoning", "")),
+            }
+        except Exception:  # noqa: BLE001
+            return self._fallback.decide_evolution(parent_creature, analysis)
+
+    def generate_evolution_ability(
+        self, parent_creature: dict[str, Any], evolution_decision: dict[str, Any]
+    ) -> dict[str, Any]:
+        prompt = (
+            "Generate one evolved ability. Return ONLY JSON with keys "
+            "name,type,energy_cost,cooldown,effect,description. "
+            f"Parent: {orjson.dumps(parent_creature).decode()} "
+            f"Decision: {orjson.dumps(evolution_decision).decode()}"
+        )
+        try:
+            out = self._call_json("generate_evolution_ability", prompt)
+            return {
+                "name": str(out["name"]),
+                "type": str(out["type"]),
+                "energy_cost": int(out["energy_cost"]),
+                "cooldown": int(out["cooldown"]),
+                "effect": str(out["effect"]),
+                "description": str(out["description"]),
+            }
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_evolution_ability(parent_creature, evolution_decision)
+
+    def update_lore(
+        self, parent_creature: dict[str, Any], evolution_decision: dict[str, Any]
+    ) -> str:
+        prompt = (
+            "Rewrite this lore in 1-2 sentences after evolution. Return plain text only. "
+            f"Parent: {orjson.dumps(parent_creature).decode()} "
+            f"Decision: {orjson.dumps(evolution_decision).decode()}"
+        )
+        try:
+            text = self._call_model(prompt, json_mode=False)
+            return text.strip()
+        except Exception:  # noqa: BLE001
+            return self._fallback.update_lore(parent_creature, evolution_decision)
+
+    def design_counter(
+        self,
+        dominant_creature: dict[str, Any],
+        fight_history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        prompt = (
+            "Design a strategic counter for a dominant arena creature. Return ONLY JSON with keys "
+            "counter_element,counter_archetype,target_weak_stat,target_strong_stat,"
+            "strategy,boost_stat. "
+            f"Dominant: {orjson.dumps(dominant_creature).decode()} "
+            f"Fight history: {orjson.dumps(fight_history).decode()}"
+        )
+        try:
+            out = self._call_json("design_counter", prompt)
+            return dict(out)
+        except Exception:  # noqa: BLE001
+            return self._fallback.design_counter(dominant_creature, fight_history)
+
+    def generate_rival(
+        self,
+        dominant_creature: dict[str, Any],
+        counter_design: dict[str, Any],
+    ) -> dict[str, Any]:
+        prompt = (
+            "Generate a rival creature concept meant to dethrone the dominant creature. "
+            "Return ONLY JSON with keys "
+            "name,lore,personality,fighting_style,visual_descriptor,behavior_weights,"
+            "counter_element,counter_archetype. "
+            f"Dominant: {orjson.dumps(dominant_creature).decode()} "
+            f"Counter design: {orjson.dumps(counter_design).decode()}"
+        )
+        try:
+            out = self._call_json("generate_rival", prompt)
+            return dict(out)
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_rival(dominant_creature, counter_design)
+
+    def generate_rival_taunts(
+        self,
+        dominant_creature: dict[str, Any],
+        rival_concept: dict[str, Any],
+    ) -> dict[str, list[str]]:
+        prompt = (
+            "Generate rival taunts. Return ONLY JSON with triggers "
+            "intro,ability,win,loss,ko; values "
+            "must be lists of 1-2 lines. "
+            f"Dominant: {orjson.dumps(dominant_creature).decode()} "
+            f"Rival: {orjson.dumps(rival_concept).decode()}"
+        )
+        try:
+            out = self._call_json("generate_rival_taunts", prompt)
+            return {k: list(v) for k, v in dict(out).items()}
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_rival_taunts(dominant_creature, rival_concept)
+
+    def gather_context(
+        self,
+        trigger_event: str,
+        simulation_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._fallback.gather_context(trigger_event, simulation_snapshot)
+
+    def identify_narrative_threads(
+        self,
+        context: dict[str, Any],
+    ) -> list[str]:
+        prompt = (
+            "Identify 2 concise narrative threads for arena commentary. Return ONLY JSON array of "
+            "strings. "
+            f"Context: {orjson.dumps(context).decode()}"
+        )
+        try:
+            out = self._call_json("identify_narrative_threads", prompt)
+            if isinstance(out, list):
+                return [str(v) for v in out]
+            return self._fallback.identify_narrative_threads(context)
+        except Exception:  # noqa: BLE001
+            return self._fallback.identify_narrative_threads(context)
+
+    def generate_commentary(
+        self,
+        trigger_event: str,
+        narrative_threads: list[str],
+        simulation_snapshot: dict[str, Any],
+    ) -> list[str]:
+        prompt = (
+            "Generate 2 vivid lines of arena commentary as The Chronicler. "
+            "Return ONLY JSON array of "
+            "strings (2 items, 10-200 chars each). "
+            f"Trigger: {trigger_event}. Threads: {orjson.dumps(narrative_threads).decode()} "
+            f"Snapshot: {orjson.dumps(simulation_snapshot).decode()}"
+        )
+        try:
+            out = self._call_json("generate_commentary", prompt)
+            if isinstance(out, list):
+                return [str(v) for v in out]
+            return self._fallback.generate_commentary(
+                trigger_event, narrative_threads, simulation_snapshot
+            )
+        except Exception:  # noqa: BLE001
+            return self._fallback.generate_commentary(
+                trigger_event, narrative_threads, simulation_snapshot
+            )
 
 
 class MockGeminiProvider:
@@ -398,8 +708,20 @@ class MockGeminiProvider:
 
 
 def get_gemini_provider() -> GeminiProvider:
-    """Returns the current provider adapter. Real API adapter will replace this later."""
-    return MockGeminiProvider()
+    global _PROVIDER_SINGLETON
+
+    settings = get_settings()
+    if settings.app_env == "test" or not settings.google_api_key:
+        return MockGeminiProvider()
+    if _PROVIDER_SINGLETON is None:
+        _PROVIDER_SINGLETON = RealGeminiProvider(
+            settings.google_api_key,
+            settings.gemini_model,
+        )
+    return _PROVIDER_SINGLETON
+
+
+_PROVIDER_SINGLETON: GeminiProvider | None = None
 
 
 # ---------------------------------------------------------------------------
