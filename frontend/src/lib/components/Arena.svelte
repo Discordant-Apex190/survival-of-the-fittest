@@ -3,11 +3,13 @@
   import { fightStore } from '$lib/stores/fight';
   import { createArena, type ArenaInstance } from '$lib/pixi/arena';
   import { createAnimator, type AnimatorInstance } from '$lib/pixi/animator';
+  import { createDebrisSystem, type DebrisSystem } from '$lib/pixi/physics';
   import type { CreatureData } from '$lib/pixi/sprite';
 
   let mountEl: HTMLDivElement;
   let arena: ArenaInstance | null = null;
   let animator: AnimatorInstance | null = null;
+  let physics: DebrisSystem | null = null;
 
   // Track which fight we've loaded so we only call setCreatures once per fight
   let loadedFightId: string | null = null;
@@ -21,10 +23,12 @@
 
   onMount(async () => {
     arena = await createArena(mountEl);
-    animator = createAnimator(arena);
+    physics = createDebrisSystem(arena.stage);
+    animator = createAnimator(arena, physics);
   });
 
   onDestroy(() => {
+    physics?.destroy();
     arena?.destroy();
   });
 
