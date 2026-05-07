@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -220,20 +221,35 @@ def step_fight(
 
     fight_id = shortuuid.uuid()
     prob_a = compute_win_probability(a_dict, b_dict)
-    fight_start_event = {
+    creature_a_payload = {
+        "id": a.id, "name": a.name, "tier": a.tier, "element": a.element, "stats": a.stats
+    }
+    creature_b_payload = {
+        "id": b.id, "name": b.name, "tier": b.tier, "element": b.element, "stats": b.stats
+    }
+    prob_b = round(1 - prob_a, 4)
+
+    # Broadcast preview so the frontend can open the betting window
+    manager.broadcast_sync({
+        "type": "fight_preview",
+        "fight_id": fight_id,
+        "creature_a": creature_a_payload,
+        "creature_b": creature_b_payload,
+        "prob_a": prob_a,
+        "prob_b": prob_b,
+    })
+
+    # Give spectators 3 seconds to place bets before the fight begins
+    time.sleep(3)
+
+    manager.broadcast_sync({
         "type": "fight_start",
         "fight_id": fight_id,
-        "creature_a": {
-            "id": a.id, "name": a.name, "tier": a.tier, "element": a.element, "stats": a.stats
-        },
-        "creature_b": {
-            "id": b.id, "name": b.name, "tier": b.tier, "element": b.element, "stats": b.stats
-        },
+        "creature_a": creature_a_payload,
+        "creature_b": creature_b_payload,
         "prob_a": prob_a,
-        "prob_b": round(1 - prob_a, 4),
-    }
-    manager.start_replay(fight_start_event)
-    manager.broadcast_sync(fight_start_event)
+        "prob_b": prob_b,
+    })
 
     outcome = run_fight(
         a_dict,
@@ -244,7 +260,7 @@ def step_fight(
     )
 
     for evt in outcome.events:
-        fight_event = {
+        manager.broadcast_sync({
             "type": "fight_event",
             "fight_id": fight_id,
             "turn": evt.turn,
@@ -254,9 +270,7 @@ def step_fight(
             "ability_name": evt.ability_name,
             "damage": evt.damage,
             "hp_remaining": evt.hp_remaining,
-        }
-        manager.record_replay_event(fight_event)
-        manager.broadcast_sync(fight_event)
+        })
 
     fight = Fight(
         id=fight_id,
@@ -286,13 +300,11 @@ def step_fight(
 
     session.commit()
 
-    fight_end_event = {
+    manager.broadcast_sync({
         "type": "fight_end",
         "fight_id": fight_id,
         "winner_id": outcome.winner_id,
-    }
-    manager.finish_replay(fight_end_event)
-    manager.broadcast_sync(fight_end_event)
+    })
 
     logger.bind(
         stage="fight",

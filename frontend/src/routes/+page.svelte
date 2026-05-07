@@ -1,41 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { browser } from '$app/environment';
   import { z } from 'zod';
   import { get, post } from '$lib/api/client';
   import { CreatureSummarySchema } from '$lib/schemas/creature';
-  import { UpcomingFightSchema } from '$lib/schemas/fight';
   import { leaderboardStore } from '$lib/stores/leaderboard';
   import { fightStore } from '$lib/stores/fight';
-  import { commentaryStore } from '$lib/stores/commentary';
   import { betStore } from '$lib/stores/bet';
   import { wsConnected } from '$lib/api/ws';
   import { elementColor, tierColor } from '$lib/theme';
-  import type { UpcomingFight } from '$lib/schemas/fight';
   import Arena from '$lib/components/Arena.svelte';
-
-  // ---------------------------------------------------------------------------
-  // Betting (pre-fight matchup from API)
-  // ---------------------------------------------------------------------------
-
-  const BettingStateSchema = z.union([
-    z.object({
-      fight_id:          z.string(),
-      creature_a_id:     z.string(),
-      creature_a_name:   z.string(),
-      creature_a_element:z.string(),
-      creature_b_id:     z.string(),
-      creature_b_name:   z.string(),
-      creature_b_element:z.string(),
-      prob_a:            z.number(),
-      prob_b:            z.number(),
-      votes_a:           z.number(),
-      votes_b:           z.number(),
-      total_votes:       z.number(),
-    }),
-    z.object({ message: z.string() }),
-  ]);
-  type BettingState = z.infer<typeof BettingStateSchema>;
 
   // ---------------------------------------------------------------------------
   // State
@@ -43,17 +16,33 @@
 
   let ticking = false;
   let tickError = '';
-  let upcoming: UpcomingFight | null = null;
-
-  let betting: BettingState | null = null;
-  let betPollInterval: ReturnType<typeof setInterval> | null = null;
-  let isBetPolling = false;
 
   // Bet UI local state
   const BET_PRESETS = [10, 25, 50, 100];
   let betAmount = 25;
   let customAmount = '';
   let betPlaced = false;
+
+  // Countdown during fight_preview window
+  let countdown = 0;
+  let countdownTimer: ReturnType<typeof setInterval> | null = null;
+
+  $: if ($fightStore.previewing) {
+    // Reset bet placed flag for new preview
+    betPlaced = !!$betStore.active;
+    countdown = 3;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      countdown = Math.max(0, countdown - 1);
+      if (countdown === 0 && countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+    }, 1000);
+  } else if (!$fightStore.previewing && countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
 
   // Auto-tick
   let autoTick = false;
@@ -64,31 +53,9 @@
   // Helpers
   // ---------------------------------------------------------------------------
 
-  function betHasState(b: BettingState | null): b is Exclude<BettingState, { message: string }> {
-    return b !== null && !('message' in b);
-  }
-
-  function upcomingHasState(u: UpcomingFight | null): u is Exclude<UpcomingFight, { message: string }> {
-    return u !== null && !('message' in u);
-  }
-
-  $: activeBet = betHasState(betting) ? betting : null;
-  $: activeUpcoming = upcomingHasState(upcoming) ? upcoming : null;
-
-  $: votePct = activeBet && activeBet.total_votes > 0
-    ? Math.round((activeBet.votes_a / activeBet.total_votes) * 100)
-    : 50;
-
   $: effectiveAmount = customAmount !== '' ? parseInt(customAmount) || 0 : betAmount;
-
-  function oddsFor(id: string): number {
-    if (!activeBet) return 2;
-    if (id === activeBet.creature_a_id) return +(1 / activeBet.prob_a).toFixed(2);
-    return +(1 / activeBet.prob_b).toFixed(2);
-  }
-
-  $: pendingBet = $betStore.active?.status === 'pending' ? $betStore.active : null;
-  $: lockedBet  = $betStore.active?.status === 'locked'  ? $betStore.active : null;
+  $: pendingBet  = $betStore.active?.status === 'pending' ? $betStore.active : null;
+  $: lockedBet   = $betStore.active?.status === 'locked'  ? $betStore.active : null;
   $: resolvedBet = ($betStore.active?.status === 'won' || $betStore.active?.status === 'lost')
     ? $betStore.active : null;
 
@@ -101,40 +68,6 @@
   $: if (!$betStore.active) betPlaced = false;
 
   // ---------------------------------------------------------------------------
-  // Betting API
-  // ---------------------------------------------------------------------------
-
-  async function loadBetting() {
-    const r = await get('/betting/current', BettingStateSchema);
-    r.match((d) => { betting = d; }, () => {});
-  }
-
-  function startBettingPolling() {
-    if (isBetPolling) return;
-    isBetPolling = true;
-    void loadBetting();
-    betPollInterval = setInterval(loadBetting, 5_000);
-  }
-
-  function stopBettingPolling() {
-    if (betPollInterval) { clearInterval(betPollInterval); betPollInterval = null; }
-    isBetPolling = false;
-    betting = null;
-  }
-
-  $: if (browser) {
-    if ($fightStore.active) startBettingPolling();
-    else stopBettingPolling();
-  }
-
-  function placeBet(creatureId: string) {
-    if (!activeBet || betPlaced || effectiveAmount <= 0) return;
-    const odds = oddsFor(creatureId);
-    const ok = betStore.place(activeBet.fight_id, creatureId, effectiveAmount, odds);
-    if (ok) betPlaced = true;
-  }
-
-  // ---------------------------------------------------------------------------
   // Tick / auto-tick
   // ---------------------------------------------------------------------------
 
@@ -144,13 +77,11 @@
       (creatures) => leaderboardStore.set(creatures),
       (e) => console.warn('Leaderboard load failed:', e.message),
     );
-    const upResult = await get('/fights/upcoming', UpcomingFightSchema);
-    upResult.match((data) => { upcoming = data; }, () => {});
   });
 
   onDestroy(() => {
-    stopBettingPolling();
     stopAuto();
+    if (countdownTimer) clearInterval(countdownTimer);
   });
 
   async function runTick() {
@@ -290,25 +221,35 @@
     <!-- Locked bet in-progress indicator -->
     {#if lockedBet}
       <div class="locked-banner">
-        Bet locked: {lockedBet.amount}◆ @ {lockedBet.odds}x
+        Bet locked: {lockedBet.amount}◆ @ {lockedBet.odds}x · fight in progress
       </div>
     {/if}
 
-    <!-- Pre-fight betting panel -->
-    {#if activeBet && !lockedBet && !resolvedBet}
-      <div class="panel-title">Place Bet</div>
+    <!-- Pre-fight betting panel — only visible during the 3-second preview window -->
+    {#if $fightStore.previewing && !lockedBet && !resolvedBet}
+      {@const ca = $fightStore.creature_a as Record<string,unknown>}
+      {@const cb = $fightStore.creature_b as Record<string,unknown>}
+      {@const caId  = ca?.id  as string}
+      {@const cbId  = cb?.id  as string}
+      {@const caEl  = ca?.element as string}
+      {@const cbEl  = cb?.element as string}
+      {@const caName = ca?.name as string}
+      {@const cbName = cb?.name as string}
+      {@const pA = $fightStore.prob_a}
+      {@const pB = $fightStore.prob_b}
+
+      <div class="panel-title">
+        Place Bet
+        <span class="countdown-badge">{countdown}s</span>
+      </div>
       <div class="bet-panel">
-        <!-- Upcoming odds -->
+        <!-- Odds -->
         <div class="odds-row">
-          <span class="odds-creature" style="color:{elementColor(activeBet.creature_a_element)}">
-            {activeBet.creature_a_name}
-          </span>
-          <span class="odds-num">{(activeBet.prob_a * 100).toFixed(0)}%</span>
+          <span class="odds-creature" style="color:{elementColor(caEl)}">{caName}</span>
+          <span class="odds-num">{(pA * 100).toFixed(0)}%</span>
           <span class="odds-sep">vs</span>
-          <span class="odds-num">{(activeBet.prob_b * 100).toFixed(0)}%</span>
-          <span class="odds-creature right" style="color:{elementColor(activeBet.creature_b_element)}">
-            {activeBet.creature_b_name}
-          </span>
+          <span class="odds-num">{(pB * 100).toFixed(0)}%</span>
+          <span class="odds-creature right" style="color:{elementColor(cbEl)}">{cbName}</span>
         </div>
 
         <!-- Amount presets -->
@@ -337,50 +278,41 @@
           <button
             class="bet-btn"
             disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
-            on:click={() => placeBet(activeBet!.creature_a_id)}
+            on:click={() => {
+              if (!$fightStore.fight_id) return;
+              const odds = +(1 / pA).toFixed(2);
+              const ok = betStore.place($fightStore.fight_id, caId, effectiveAmount, odds);
+              if (ok) betPlaced = true;
+            }}
           >
-            <span style="color:{elementColor(activeBet.creature_a_element)}">{activeBet.creature_a_name}</span>
-            <span class="payout-hint">→ {Math.floor(effectiveAmount * oddsFor(activeBet.creature_a_id))}◆</span>
+            <span style="color:{elementColor(caEl)}">{caName}</span>
+            <span class="payout-hint">→ {Math.floor(effectiveAmount * +(1/pA).toFixed(2))}◆</span>
           </button>
           <button
             class="bet-btn"
             disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
-            on:click={() => placeBet(activeBet!.creature_b_id)}
+            on:click={() => {
+              if (!$fightStore.fight_id) return;
+              const odds = +(1 / pB).toFixed(2);
+              const ok = betStore.place($fightStore.fight_id, cbId, effectiveAmount, odds);
+              if (ok) betPlaced = true;
+            }}
           >
-            <span style="color:{elementColor(activeBet.creature_b_element)}">{activeBet.creature_b_name}</span>
-            <span class="payout-hint">→ {Math.floor(effectiveAmount * oddsFor(activeBet.creature_b_id))}◆</span>
+            <span style="color:{elementColor(cbEl)}">{cbName}</span>
+            <span class="payout-hint">→ {Math.floor(effectiveAmount * +(1/pB).toFixed(2))}◆</span>
           </button>
         </div>
 
         {#if pendingBet}
           <div class="pending-note">
             Pending: {pendingBet.amount}◆ on
-            <span style="color:{
-              pendingBet.creatureId === activeBet.creature_a_id
-                ? elementColor(activeBet.creature_a_element)
-                : elementColor(activeBet.creature_b_element)
-            }">
-              {pendingBet.creatureId === activeBet.creature_a_id
-                ? activeBet.creature_a_name
-                : activeBet.creature_b_name}
+            <span style="color:{pendingBet.creatureId === caId ? elementColor(caEl) : elementColor(cbEl)}">
+              {pendingBet.creatureId === caId ? caName : cbName}
             </span>
             (×{pendingBet.odds})
             <button class="cancel-btn" on:click={() => { betStore.cancel(); betPlaced = false; }}>cancel</button>
           </div>
         {/if}
-
-        <!-- Spectator vote bar -->
-        <div class="tally-bar">
-          <div
-            class="tally-a"
-            style="width:{votePct}%; background:{elementColor(activeBet.creature_a_element)}33"
-          ></div>
-        </div>
-        <div class="tally-labels">
-          <span style="color:{elementColor(activeBet.creature_a_element)}">{activeBet.votes_a} votes</span>
-          <span class="tally-total">{activeBet.total_votes} total</span>
-          <span style="color:{elementColor(activeBet.creature_b_element)}">{activeBet.votes_b} votes</span>
-        </div>
       </div>
     {/if}
 
@@ -397,17 +329,6 @@
       </ul>
     {/if}
 
-    <!-- Commentary -->
-    <div class="panel-title" style="margin-top:12px">The Chronicler</div>
-    {#if $commentaryStore.length === 0}
-      <p class="empty">Awaiting the Chronicler…</p>
-    {:else}
-      <ul class="commentary-list">
-        {#each $commentaryStore as line}
-          <li class="commentary-line">{line}</li>
-        {/each}
-      </ul>
-    {/if}
   </aside>
 </div>
 
@@ -501,6 +422,15 @@
     font-size: 10px; padding: 4px 6px; border-radius: 4px;
   }
   .error { color: var(--fail); font-size: 10px; }
+
+  /* Countdown badge inside panel-title */
+  .countdown-badge {
+    float: right;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--electric);
+    font-variant-numeric: tabular-nums;
+  }
 
   /* Token bar */
   .token-bar {
@@ -604,14 +534,6 @@
   .h-result { flex-shrink: 0; font-weight: 600; font-size: 10px; }
   .history-row.win  .h-result { color: #4ade80; }
   .history-row.loss .h-result { color: var(--fail); }
-
-  /* Commentary */
-  .commentary-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-  .commentary-line {
-    font-size: 11px; color: var(--text-mid); font-style: italic;
-    padding: 6px 8px; border-left: 2px solid var(--rare);
-    background: var(--card); border-radius: 0 4px 4px 0; line-height: 1.5;
-  }
 
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(-4px); }

@@ -2,7 +2,6 @@ import { match } from 'ts-pattern';
 import { get, writable } from 'svelte/store';
 import { env } from '../../env';
 import { WsEventSchema } from '../schemas/ws';
-import { commentaryStore } from '../stores/commentary';
 import { fightStore } from '../stores/fight';
 import { leaderboardStore } from '../stores/leaderboard';
 import { betStore } from '../stores/bet';
@@ -39,6 +38,10 @@ export function connect(): void {
     const event = result.data;
 
     match(event)
+      .with({ type: 'fight_preview' }, (ev) => {
+        fightStore.preview(ev);
+        betStore.onFightPreview(ev);
+      })
       .with({ type: 'fight_start' }, (ev) => {
         fightStore.start(ev);
         betStore.onFightStart(ev);
@@ -59,7 +62,7 @@ export function connect(): void {
         betStore.onFightEnd(ev, names);
       })
       .with({ type: 'leaderboard_update' }, (ev) => leaderboardStore.set(ev.data))
-      .with({ type: 'commentary' },         (ev) => commentaryStore.add(ev.lines))
+      .with({ type: 'commentary' },         () => { /* commentary removed */ })
       .exhaustive();
   };
 

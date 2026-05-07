@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import type { WsFightEnd, WsFightStart } from '../schemas/ws';
+import type { WsFightEnd, WsFightPreview, WsFightStart } from '../schemas/ws';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,7 +93,18 @@ function createBetStore() {
       return ok;
     },
 
-    /** Called when fight_start arrives. Lock or void the bet based on actual fighters. */
+    /** Called when fight_preview arrives — clear any stale resolved bet so UI is fresh. */
+    onFightPreview(_ev: WsFightPreview): void {
+      update((s) => {
+        // Auto-dismiss a resolved bet from the previous fight before opening new betting window
+        if (s.active?.status === 'won' || s.active?.status === 'lost') {
+          return persist({ ...s, active: null });
+        }
+        return s;
+      });
+    },
+
+    /** Called when fight_start arrives. Lock or void the pending bet. */
     onFightStart(ev: WsFightStart): void {
       update((s) => {
         if (!s.active || s.active.status !== 'pending') return s;
@@ -104,7 +115,7 @@ function createBetStore() {
         if (fighters.includes(s.active.creatureId)) {
           return persist({ ...s, active: { ...s.active, status: 'locked' } });
         }
-        // Matchup changed — return tokens, void bet
+        // Matchup mismatch — return tokens
         return persist({
           ...s,
           tokens: s.tokens + s.active.amount,
