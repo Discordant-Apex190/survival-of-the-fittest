@@ -179,168 +179,89 @@ class RealGeminiProvider:
             raise
 
     def generate_concept(self, seed_params: dict[str, Any]) -> dict[str, Any]:
-        prompt = (
-            "Generate a combat creature concept. Return ONLY JSON with keys: "
-            "name,lore,personality,fighting_style,visual_descriptor,behavior_weights. "
-            "behavior_weights must include attack, defend, ability as floats that sum near 1. "
-            f"Seed params: {orjson.dumps(seed_params).decode()}"
-        )
-        try:
-            out = self._call_json("generate_concept", prompt)
-            return {
-                "name": str(out["name"]),
-                "lore": str(out["lore"]),
-                "personality": str(out["personality"]),
-                "fighting_style": str(out["fighting_style"]),
-                "visual_descriptor": dict(out["visual_descriptor"]),
-                "behavior_weights": dict(out["behavior_weights"]),
-            }
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_concept(seed_params)
+        from backend.graphs.nodes.concept_generator import generate_concept_local
+        rng = Random(":".join([
+            str(seed_params.get("element", "")),
+            str(seed_params.get("archetype", "")),
+            str(seed_params.get("tier", "")),
+            str(seed_params.get("biome", "")),
+        ]))
+        return generate_concept_local(seed_params, rng)
 
     def generate_stats(
         self, seed_params: dict[str, Any], concept: dict[str, Any]
     ) -> GeneratedStats:
-        prompt = (
-            "Generate balanced combat stats and abilities. Return ONLY JSON with keys stats and "
-            "abilities. stats keys: health,attack,defense,speed (integers). "
-            "abilities is a list of objects with "
-            "name,type,energy_cost,cooldown,effect,description. "
-            "Obey provided tier budget. "
-            f"Seed params: {orjson.dumps(seed_params).decode()} "
-            f"Concept: {orjson.dumps(concept).decode()}"
+        from backend.graphs.nodes.stat_generator import generate_stats_local
+        rng = Random(":".join([
+            str(seed_params.get("element", "")),
+            str(seed_params.get("archetype", "")),
+            str(seed_params.get("tier", "")),
+            str(seed_params.get("biome", "")),
+        ]))
+        return generate_stats_local(
+            archetype=seed_params.get("archetype", "berserker"),
+            element=seed_params.get("element", "fire"),
+            tier=seed_params.get("tier", "common"),
+            rng=rng,
         )
-        try:
-            out = self._call_json("generate_stats", prompt)
-            return GeneratedStats(stats=dict(out["stats"]), abilities=list(out["abilities"]))
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_stats(seed_params, concept)
 
     def generate_taunts(
         self, seed_params: dict[str, Any], concept: dict[str, Any]
     ) -> dict[str, list[str]]:
-        prompt = (
-            "Generate short taunts. Return ONLY JSON object with triggers "
-            "intro,ability,win,loss,ko. "
-            "Each value must be a list of 1-2 short lines. "
-            f"Seed params: {orjson.dumps(seed_params).decode()} "
-            f"Concept: {orjson.dumps(concept).decode()}"
-        )
-        try:
-            out = self._call_json("generate_taunts", prompt)
-            return {k: list(v) for k, v in dict(out).items()}
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_taunts(seed_params, concept)
+        from backend.graphs.nodes.concept_generator import generate_taunts_local
+        rng = Random(":".join([
+            str(seed_params.get("element", "")),
+            str(seed_params.get("archetype", "")),
+            str(concept.get("name", "")),
+        ]))
+        return generate_taunts_local(seed_params, concept, rng)
 
     def decide_evolution(
         self, parent_creature: dict[str, Any], analysis: dict[str, Any]
     ) -> dict[str, Any]:
-        prompt = (
-            "Decide evolution changes. Return ONLY JSON with stat_boosts (object), "
-            "new_ability_slot (boolean), reasoning (string). "
-            f"Parent: {orjson.dumps(parent_creature).decode()} "
-            f"Analysis: {orjson.dumps(analysis).decode()}"
-        )
-        try:
-            out = self._call_json("decide_evolution", prompt)
-            return {
-                "stat_boosts": dict(out.get("stat_boosts", {})),
-                "new_ability_slot": bool(out.get("new_ability_slot", False)),
-                "reasoning": str(out.get("reasoning", "")),
-            }
-        except Exception:  # noqa: BLE001
-            return self._fallback.decide_evolution(parent_creature, analysis)
+        from backend.fight.genetic import genetic_decide_evolution
+        return genetic_decide_evolution(parent_creature, analysis)
 
     def generate_evolution_ability(
         self, parent_creature: dict[str, Any], evolution_decision: dict[str, Any]
     ) -> dict[str, Any]:
-        prompt = (
-            "Generate one evolved ability. Return ONLY JSON with keys "
-            "name,type,energy_cost,cooldown,effect,description. "
-            f"Parent: {orjson.dumps(parent_creature).decode()} "
-            f"Decision: {orjson.dumps(evolution_decision).decode()}"
+        from backend.graphs.nodes.stat_generator import generate_evolution_ability_local
+        rng = Random(
+            f"{parent_creature.get('id', '')}:new_ability:{parent_creature.get('generation', 0)}"
         )
-        try:
-            out = self._call_json("generate_evolution_ability", prompt)
-            return {
-                "name": str(out["name"]),
-                "type": str(out["type"]),
-                "energy_cost": int(out["energy_cost"]),
-                "cooldown": int(out["cooldown"]),
-                "effect": str(out["effect"]),
-                "description": str(out["description"]),
-            }
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_evolution_ability(parent_creature, evolution_decision)
+        return generate_evolution_ability_local(parent_creature, rng)
 
     def update_lore(
         self, parent_creature: dict[str, Any], evolution_decision: dict[str, Any]
     ) -> str:
-        prompt = (
-            "Rewrite this lore in 1-2 sentences after evolution. Return plain text only. "
-            f"Parent: {orjson.dumps(parent_creature).decode()} "
-            f"Decision: {orjson.dumps(evolution_decision).decode()}"
-        )
-        try:
-            text = self._call_model(prompt, json_mode=False)
-            return text.strip()
-        except Exception:  # noqa: BLE001
-            return self._fallback.update_lore(parent_creature, evolution_decision)
+        from backend.graphs.nodes.concept_generator import update_lore_local
+        rng = Random(f"{parent_creature.get('id', '')}:lore:{parent_creature.get('generation', 0)}")
+        return update_lore_local(parent_creature, evolution_decision, rng)
 
     def design_counter(
         self,
         dominant_creature: dict[str, Any],
         fight_history: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        prompt = (
-            "Design a strategic counter for a dominant arena creature. Return ONLY JSON with keys "
-            "counter_element,counter_archetype,target_weak_stat,target_strong_stat,"
-            "strategy,boost_stat. "
-            f"Dominant: {orjson.dumps(dominant_creature).decode()} "
-            f"Fight history: {orjson.dumps(fight_history).decode()}"
-        )
-        try:
-            out = self._call_json("design_counter", prompt)
-            return dict(out)
-        except Exception:  # noqa: BLE001
-            return self._fallback.design_counter(dominant_creature, fight_history)
+        from backend.graphs.nodes.counter_logic import design_counter_local
+        return design_counter_local(dominant_creature, fight_history)
 
     def generate_rival(
         self,
         dominant_creature: dict[str, Any],
         counter_design: dict[str, Any],
     ) -> dict[str, Any]:
-        prompt = (
-            "Generate a rival creature concept meant to dethrone the dominant creature. "
-            "Return ONLY JSON with keys "
-            "name,lore,personality,fighting_style,visual_descriptor,behavior_weights,"
-            "counter_element,counter_archetype. "
-            f"Dominant: {orjson.dumps(dominant_creature).decode()} "
-            f"Counter design: {orjson.dumps(counter_design).decode()}"
-        )
-        try:
-            out = self._call_json("generate_rival", prompt)
-            return dict(out)
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_rival(dominant_creature, counter_design)
+        from backend.graphs.nodes.counter_logic import generate_rival_local
+        return generate_rival_local(dominant_creature, counter_design)
 
     def generate_rival_taunts(
         self,
         dominant_creature: dict[str, Any],
         rival_concept: dict[str, Any],
     ) -> dict[str, list[str]]:
-        prompt = (
-            "Generate rival taunts. Return ONLY JSON with triggers "
-            "intro,ability,win,loss,ko; values "
-            "must be lists of 1-2 lines. "
-            f"Dominant: {orjson.dumps(dominant_creature).decode()} "
-            f"Rival: {orjson.dumps(rival_concept).decode()}"
-        )
-        try:
-            out = self._call_json("generate_rival_taunts", prompt)
-            return {k: list(v) for k, v in dict(out).items()}
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_rival_taunts(dominant_creature, rival_concept)
+        from backend.graphs.nodes.concept_generator import generate_rival_taunts_local
+        rng = Random(f"{dominant_creature.get('id', '')}:rival_taunts")
+        return generate_rival_taunts_local(dominant_creature, rival_concept, rng)
 
     def gather_context(
         self,
@@ -353,18 +274,8 @@ class RealGeminiProvider:
         self,
         context: dict[str, Any],
     ) -> list[str]:
-        prompt = (
-            "Identify 2 concise narrative threads for arena commentary. Return ONLY JSON array of "
-            "strings. "
-            f"Context: {orjson.dumps(context).decode()}"
-        )
-        try:
-            out = self._call_json("identify_narrative_threads", prompt)
-            if isinstance(out, list):
-                return [str(v) for v in out]
-            return self._fallback.identify_narrative_threads(context)
-        except Exception:  # noqa: BLE001
-            return self._fallback.identify_narrative_threads(context)
+        from backend.graphs.nodes.concept_generator import identify_narrative_threads_local
+        return identify_narrative_threads_local(context)
 
     def generate_commentary(
         self,
@@ -372,24 +283,9 @@ class RealGeminiProvider:
         narrative_threads: list[str],
         simulation_snapshot: dict[str, Any],
     ) -> list[str]:
-        prompt = (
-            "Generate 2 vivid lines of arena commentary as The Chronicler. "
-            "Return ONLY JSON array of "
-            "strings (2 items, 10-200 chars each). "
-            f"Trigger: {trigger_event}. Threads: {orjson.dumps(narrative_threads).decode()} "
-            f"Snapshot: {orjson.dumps(simulation_snapshot).decode()}"
-        )
-        try:
-            out = self._call_json("generate_commentary", prompt)
-            if isinstance(out, list):
-                return [str(v) for v in out]
-            return self._fallback.generate_commentary(
-                trigger_event, narrative_threads, simulation_snapshot
-            )
-        except Exception:  # noqa: BLE001
-            return self._fallback.generate_commentary(
-                trigger_event, narrative_threads, simulation_snapshot
-            )
+        from backend.graphs.nodes.concept_generator import generate_commentary_local
+        rng = Random(f"{trigger_event}:{len(narrative_threads)}:{simulation_snapshot.get('total_fights', 0)}")
+        return generate_commentary_local(trigger_event, narrative_threads, simulation_snapshot, rng)
 
 
 class MockGeminiProvider:
@@ -407,249 +303,78 @@ class MockGeminiProvider:
         return Random(seed)
 
     def generate_concept(self, seed_params: dict[str, Any]) -> dict[str, Any]:
-        rng = self._rng(seed_params)
-        element = seed_params["element"].title()
-        archetype = seed_params["archetype"].title()
-        biome = seed_params["biome"].title()
-        suffix = rng.choice(["Warden", "Howl", "Spire", "Shade", "Fang"])
-        name = f"{element} {archetype} {suffix}"
-        return {
-            "name": name,
-            "lore": f"Forged in the {biome}, {name} thrives in unforgiving arenas.",
-            "personality": rng.choice(["aggressive", "calculating", "disciplined", "chaotic"]),
-            "fighting_style": rng.choice(["rushdown", "counter", "zoning", "brawler"]),
-            "visual_descriptor": {
-                "silhouette": rng.choice(["lean", "towering", "hulking"]),
-                "palette": [
-                    seed_params["element"],
-                    rng.choice(["obsidian", "gold", "ash", "teal"]),
-                ],
-            },
-            "behavior_weights": {
-                "attack": round(rng.uniform(0.3, 0.7), 2),
-                "defend": round(rng.uniform(0.1, 0.4), 2),
-                "ability": round(rng.uniform(0.1, 0.4), 2),
-            },
-        }
+        from backend.graphs.nodes.concept_generator import generate_concept_local
+        return generate_concept_local(seed_params, self._rng(seed_params))
 
     def generate_stats(
         self, seed_params: dict[str, Any], concept: dict[str, Any]
     ) -> GeneratedStats:
+        from backend.graphs.nodes.stat_generator import generate_stats_local
         rng = self._rng(seed_params)
-        budget = int(seed_params["stat_budget"])
-
-        max_single_stat = {"common": 25, "uncommon": 30, "rare": 38, "legendary": 50}[
-            seed_params["tier"]
-        ]
-        stat_names = ["health", "attack", "defense", "speed"]
-
-        # Allocate budget while respecting max-single-stat constraints for each tier.
-        remaining = budget
-        stats: dict[str, int] = {}
-        for index, stat_name in enumerate(stat_names):
-            remaining_slots = len(stat_names) - index - 1
-            min_for_slot = max(1, remaining - (remaining_slots * max_single_stat))
-            max_for_slot = min(max_single_stat, remaining - remaining_slots)
-            value = rng.randint(min_for_slot, max_for_slot)
-            stats[stat_name] = value
-            remaining -= value
-
-        max_slots = {"common": 1, "uncommon": 2, "rare": 3, "legendary": 4}[seed_params["tier"]]
-        ability_count = max(1, min(max_slots, 2))
-
-        abilities: list[dict[str, Any]] = []
-        for idx in range(ability_count):
-            ability_name = rng.choice(
-                ["Rift Slash", "Ember Arc", "Stone Pulse", "Volt Pin", "Frost Lock"]
-            )
-            abilities.append(
-                {
-                    "name": f"{ability_name} {idx + 1}",
-                    "type": seed_params["element"],
-                    "energy_cost": 8 + (idx * 4),
-                    "cooldown": 1 + idx,
-                    "effect": rng.choice(["damage", "stun", "slow", "shield_break"]),
-                    "description": (
-                        f"{concept['name']} uses {ability_name.lower()} "
-                        "to pressure opponents."
-                    ),
-                }
-            )
-
-        return GeneratedStats(stats=stats, abilities=abilities)
+        return generate_stats_local(
+            archetype=seed_params.get("archetype", "berserker"),
+            element=seed_params.get("element", "fire"),
+            tier=seed_params.get("tier", "common"),
+            rng=rng,
+        )
 
     def generate_taunts(
         self, seed_params: dict[str, Any], concept: dict[str, Any]
     ) -> dict[str, list[str]]:
-        _ = seed_params
-        name = concept["name"]
-        return {
-            "intro": [f"I am {name}. The arena remembers me."],
-            "ability": ["You felt that before you saw it."],
-            "win": ["Another lesson carved into the sand."],
-            "loss": ["I learn. I return sharper."],
-            "ko": ["Kneel. Adapt or vanish."],
-        }
+        from backend.graphs.nodes.concept_generator import generate_taunts_local
+        rng = Random(":".join([
+            str(seed_params.get("element", "")),
+            str(seed_params.get("archetype", "")),
+            str(concept.get("name", "")),
+        ]))
+        return generate_taunts_local(seed_params, concept, rng)
 
     def decide_evolution(
         self, parent_creature: dict[str, Any], analysis: dict[str, Any]
     ) -> dict[str, Any]:
-        rng = Random(f"{parent_creature['id']}:evolution:{parent_creature['generation']}")
-        tier = parent_creature["tier"]
-        max_single = _TIER_MAX_SINGLE[tier]
-        current_stats: dict[str, int] = parent_creature["stats"]
-        stat_names = ["health", "attack", "defense", "speed"]
-        n_boosts = rng.randint(1, 2)
-        chosen = rng.sample(stat_names, n_boosts)
-        stat_boosts: dict[str, int] = {}
-        for s in chosen:
-            headroom = max_single - current_stats.get(s, 0)
-            if headroom <= 0:
-                continue
-            boost = min(rng.randint(2, 5), headroom)
-            if boost > 0:
-                stat_boosts[s] = boost
-        weaknesses = [w for w in analysis.get("weaknesses", []) if w is not None]
-        new_ability_slot = bool(weaknesses) and rng.random() < 0.5
-        reasoning = (
-            f"Adapted to address {', '.join(weaknesses)} weaknesses."
-            if weaknesses
-            else "Refined core strengths through repeated combat."
-        )
-        return {
-            "stat_boosts": stat_boosts,
-            "new_ability_slot": new_ability_slot,
-            "reasoning": reasoning,
-        }
+        from backend.fight.genetic import genetic_decide_evolution
+        return genetic_decide_evolution(parent_creature, analysis)
 
     def generate_evolution_ability(
         self, parent_creature: dict[str, Any], evolution_decision: dict[str, Any]
     ) -> dict[str, Any]:
-        _ = evolution_decision
-        rng = Random(f"{parent_creature['id']}:new_ability:{parent_creature['generation']}")
-        ability_name = rng.choice(
-            ["Rift Slash", "Ember Arc", "Stone Pulse", "Volt Pin", "Frost Lock"]
+        from backend.graphs.nodes.stat_generator import generate_evolution_ability_local
+        rng = Random(
+            f"{parent_creature.get('id', '')}:new_ability:{parent_creature.get('generation', 0)}"
         )
-        return {
-            "name": f"Evolved {ability_name}",
-            "type": parent_creature["element"],
-            "energy_cost": rng.randint(10, 20),
-            "cooldown": rng.randint(2, 4),
-            "effect": rng.choice(["damage", "stun", "slow", "shield_break"]),
-            "description": (
-                f"A power awakened in {parent_creature['name']} through conflict."
-            ),
-        }
+        return generate_evolution_ability_local(parent_creature, rng)
 
     def update_lore(
         self, parent_creature: dict[str, Any], evolution_decision: dict[str, Any]
     ) -> str:
-        original = parent_creature.get("lore", "")
-        reasoning = evolution_decision.get("reasoning", "battle-hardened by conflict")
-        return f"{original} Through trial, {parent_creature['name']} evolved: {reasoning}"
+        from backend.graphs.nodes.concept_generator import update_lore_local
+        rng = Random(f"{parent_creature.get('id', '')}:lore:{parent_creature.get('generation', 0)}")
+        return update_lore_local(parent_creature, evolution_decision, rng)
 
     def design_counter(
         self,
         dominant_creature: dict[str, Any],
         fight_history: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        stats = dominant_creature.get("stats", {})
-        # Identify the dominant creature's weakest stats to counter with opposite strengths
-        sorted_stats = sorted(stats.items(), key=lambda kv: kv[1])
-        dominant_weak_stat = sorted_stats[0][0] if sorted_stats else "defense"
-        dominant_strong_stat = sorted_stats[-1][0] if sorted_stats else "attack"
-
-        element_counters = {
-            "fire": "ice",
-            "ice": "electric",
-            "electric": "nature",
-            "nature": "void",
-            "void": "fire",
-        }
-        target_element = dominant_creature.get("element", "fire")
-        counter_element = element_counters.get(target_element, target_element)
-
-        counter_archetype = {
-            "berserker": "sentinel",
-            "sentinel": "trickster",
-            "trickster": "stalker",
-            "stalker": "guardian",
-            "guardian": "berserker",
-        }.get(dominant_creature.get("fighting_style", "brawler"), "trickster")
-
-        strategy = (
-            f"Counter {dominant_creature['name']}'s {dominant_strong_stat} dominance "
-            f"by exploiting their {dominant_weak_stat}. "
-            f"Use {counter_element} element to neutralise their {target_element} strengths."
-        )
-        return {
-            "counter_element": counter_element,
-            "counter_archetype": counter_archetype,
-            "target_weak_stat": dominant_weak_stat,
-            "target_strong_stat": dominant_strong_stat,
-            "strategy": strategy,
-            "boost_stat": dominant_weak_stat,  # rival will be strong where dominant is weak
-        }
+        from backend.graphs.nodes.counter_logic import design_counter_local
+        return design_counter_local(dominant_creature, fight_history)
 
     def generate_rival(
         self,
         dominant_creature: dict[str, Any],
         counter_design: dict[str, Any],
     ) -> dict[str, Any]:
-        rng = Random(f"{dominant_creature['id']}:rival:generate")
-        dominant_name = dominant_creature.get("name", "Unknown")
-        counter_element = counter_design["counter_element"]
-        counter_archetype = counter_design["counter_archetype"]
-        suffix = rng.choice(["Nemesis", "Bane", "Scourge", "Ruin", "Vex"])
-        rival_name = f"{counter_element.title()} {suffix} of {dominant_name}"
-
-        return {
-            "name": rival_name,
-            "lore": (
-                f"Born from the shadow of {dominant_name}'s reign. "
-                f"Every scar carved by that creature became a lesson. "
-                f"{rival_name} exists for one purpose: to end the streak."
-            ),
-            "personality": rng.choice(["obsessed", "cold", "relentless", "calculating"]),
-            "fighting_style": counter_archetype,
-            "visual_descriptor": {
-                "silhouette": rng.choice(["angular", "predatory", "mirrored"]),
-                "palette": [counter_element, "obsidian"],
-            },
-            "behavior_weights": {
-                "aggression": round(0.4 + rng.uniform(0.0, 0.3), 2),
-                "caution": round(0.2 + rng.uniform(0.0, 0.2), 2),
-                "cunning": round(0.4 + rng.uniform(0.0, 0.3), 2),
-                "risk_tolerance": round(0.5 + rng.uniform(0.0, 0.2), 2),
-            },
-            "counter_element": counter_element,
-            "counter_archetype": counter_archetype,
-        }
+        from backend.graphs.nodes.counter_logic import generate_rival_local
+        return generate_rival_local(dominant_creature, counter_design)
 
     def generate_rival_taunts(
         self,
         dominant_creature: dict[str, Any],
         rival_concept: dict[str, Any],
     ) -> dict[str, list[str]]:
-        dominant_name = dominant_creature.get("name", "Unknown")
-        return {
-            "intro": [
-                f"I've watched every one of your fights, {dominant_name}.",
-                "Every win you celebrate brought me one step closer.",
-            ],
-            "ability": [
-                f"You won't see this one coming, {dominant_name}.",
-            ],
-            "win": [
-                f"The streak ends here. The arena forgets you, {dominant_name}.",
-            ],
-            "loss": [
-                f"This isn't over, {dominant_name}. I was made for this.",
-            ],
-            "ko": [
-                f"Fall. The era of {dominant_name} is over.",
-            ],
-        }
+        from backend.graphs.nodes.concept_generator import generate_rival_taunts_local
+        rng = Random(f"{dominant_creature.get('id', '')}:rival_taunts")
+        return generate_rival_taunts_local(dominant_creature, rival_concept, rng)
 
 
     def gather_context(
@@ -669,26 +394,8 @@ class MockGeminiProvider:
         self,
         context: dict[str, Any],
     ) -> list[str]:
-        threads: list[str] = []
-        trigger = context.get("trigger_event", "periodic")
-        top = context.get("top_creatures", [])
-
-        if trigger == "extinction":
-            threads.append("A bloodline ends — the arena claims another victim.")
-        elif trigger == "rival_spawned":
-            threads.append("A rival emerges from the shadow of a dominant reign.")
-        elif trigger == "evolution":
-            threads.append("Evolution stirs — a creature transforms beyond its origin.")
-        elif trigger == "win_streak":
-            threads.append("The streak continues — dominance carved fight by fight.")
-        else:
-            threads.append("The arena churns. Blood and glory. Nothing more.")
-
-        if top:
-            champion = top[0].get("name", "the champion")
-            threads.append(f"{champion} stands above the rest — for now.")
-
-        return threads
+        from backend.graphs.nodes.concept_generator import identify_narrative_threads_local
+        return identify_narrative_threads_local(context)
 
     def generate_commentary(
         self,
@@ -696,15 +403,9 @@ class MockGeminiProvider:
         narrative_threads: list[str],
         simulation_snapshot: dict[str, Any],
     ) -> list[str]:
-        rng = Random(f"{trigger_event}:{len(narrative_threads)}")
-        lines = [narrative_threads[0]] if narrative_threads else ["The arena watches."]
-        extras = [
-            "The strong survive. The weak become legend.",
-            "Every fight rewrites the hierarchy.",
-            "Power is borrowed. It is always reclaimed.",
-        ]
-        lines.append(rng.choice(extras))
-        return lines
+        from backend.graphs.nodes.concept_generator import generate_commentary_local
+        rng = Random(f"{trigger_event}:{len(narrative_threads)}:{simulation_snapshot.get('total_fights', 0)}")
+        return generate_commentary_local(trigger_event, narrative_threads, simulation_snapshot, rng)
 
 
 def get_gemini_provider() -> GeminiProvider:

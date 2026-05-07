@@ -4,12 +4,16 @@
   import { createArena, type ArenaInstance } from '$lib/pixi/arena';
   import { createAnimator, type AnimatorInstance } from '$lib/pixi/animator';
   import { createDebrisSystem, type DebrisSystem } from '$lib/pixi/physics';
+  import { createElementEmitter, type ElementEmitter } from '$lib/pixi/particles';
   import type { CreatureData } from '$lib/pixi/sprite';
 
   let mountEl: HTMLDivElement;
   let arena: ArenaInstance | null = null;
   let animator: AnimatorInstance | null = null;
   let physics: DebrisSystem | null = null;
+
+  // Shared mutable map — animator holds a reference, we mutate it per fight
+  const elementEmitters = new Map<string, ElementEmitter>();
 
   // Track which fight we've loaded so we only call setCreatures once per fight
   let loadedFightId: string | null = null;
@@ -21,25 +25,39 @@
   let mediaRecorder: MediaRecorder | null = null;
   let chunks: BlobPart[] = [];
 
+  function destroyEmitters(): void {
+    elementEmitters.forEach((e) => e.destroy());
+    elementEmitters.clear();
+  }
+
   onMount(async () => {
     arena = await createArena(mountEl);
     physics = createDebrisSystem(arena.stage);
-    animator = createAnimator(arena, physics);
+    animator = createAnimator(arena, physics, elementEmitters);
   });
 
   onDestroy(() => {
+    destroyEmitters();
     physics?.destroy();
     arena?.destroy();
   });
 
-  // New fight started — build sprites
+  // New fight started — build sprites + element emitters
   $: if (arena && animator) {
     const { fight_id, creature_a, creature_b } = $fightStore;
     if (fight_id && fight_id !== loadedFightId && creature_a && creature_b) {
       loadedFightId = fight_id;
       lastEventCount = 0;
       animator.reset();
-      arena.setCreatures(creature_a as CreatureData, creature_b as CreatureData);
+
+      // Destroy old emitters and create fresh ones for this fight's elements
+      const caData = creature_a as CreatureData;
+      const cbData = creature_b as CreatureData;
+      destroyEmitters();
+      elementEmitters.set(caData.id, createElementEmitter(arena.stage, caData.element));
+      elementEmitters.set(cbData.id, createElementEmitter(arena.stage, cbData.element));
+
+      arena.setCreatures(caData, cbData);
     }
   }
 

@@ -109,40 +109,27 @@ class CombatantMachine:
                 self.cooldowns[name] -= 1
         self.energy = min(100, self.energy + ABILITY_ENERGY_REGEN)
 
-    def choose_action(self) -> str:
-        """Pick action based on state + behavior weights + HP ratio.
+    def choose_action(self, opponent: "CombatantMachine") -> str:
+        """Pick action using a behavior tree driven by behavior weights and context.
 
         Returns one of: 'attack', 'ability', 'defend', 'flee', 'rage', 'taunt'
         """
-        hp_r = self.hp_ratio
-        low_hp = hp_r < LOW_HP_RATIO
-
-        # Build probability weights for each action
-        w_attack = 0.40 + self.aggression * 0.20
-        w_ability = 0.20 + self.risk_tolerance * 0.10 if self.available_abilities() else 0.0
-        w_defend = 0.15 + self.caution * 0.20
-        w_flee   = 0.05 + self.cunning * 0.10
-        w_rage   = 0.05 + self.risk_tolerance * 0.10
-        w_taunt  = 0.05 + self.cunning * 0.05
-
-        # HP pressure adjustments
-        if low_hp:
-            if self.aggression > 0.6:
-                w_rage += 0.25
-                w_defend -= 0.05
-            else:
-                w_defend += 0.15
-                w_flee += 0.10
-                w_attack -= 0.10
-
-        # Normalise and pick
-        choices = ["attack", "ability", "defend", "flee", "rage", "taunt"]
-        weights = [max(0.0, w) for w in [w_attack, w_ability, w_defend, w_flee, w_rage, w_taunt]]
-        total = sum(weights)
-        if total == 0:
-            return "attack"
-        probs = [w / total for w in weights]
-        return self.rng.choices(choices, weights=probs, k=1)[0]
+        from backend.fight.behavior_tree import BTContext, FIGHT_TREE
+        ctx = BTContext(
+            hp_ratio=self.hp_ratio,
+            enemy_hp_ratio=opponent.hp_ratio,
+            aggression=self.aggression,
+            caution=self.caution,
+            cunning=self.cunning,
+            risk_tolerance=self.risk_tolerance,
+            momentum=self.momentum,
+            has_ability=bool(self.available_abilities()),
+            energy=self.energy,
+            flee_bait_active=self.flee_bait,
+            rng=self.rng,
+        )
+        _, action = FIGHT_TREE.tick(ctx)
+        return action or "attack"
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +254,7 @@ def run_fight(
             if not attacker.is_alive() or not defender.is_alive():
                 break
 
-            action = attacker.choose_action()
+            action = attacker.choose_action(defender)
             is_rage = action == "rage"
             is_flee_bait = attacker.flee_bait
 

@@ -1,5 +1,5 @@
 import { Application, Container, Graphics, Text } from 'pixi.js';
-import { buildSprite, type CreatureData } from './sprite';
+import { applyBattleScars, buildSprite, type CreatureData } from './sprite';
 import { elementColor } from '../theme';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,8 @@ interface SlotData {
   nameLabel:  Text;
   homeX:      number;
   homeY:      number;
+  element:    string;
+  creatureId: string;
 }
 
 export interface ArenaInstance {
@@ -140,6 +142,8 @@ export async function createArena(mountEl: HTMLElement): Promise<ArenaInstance> 
         nameLabel,
         homeX: pos.x,
         homeY: pos.y,
+        element:    creature.element,
+        creatureId: creature.id,
       });
     }
   }
@@ -150,6 +154,7 @@ export async function createArena(mountEl: HTMLElement): Promise<ArenaInstance> 
     const pct = Math.max(0, currentHp) / slot.maxHp;
     drawHpBar(slot.hpBar, pct);
     slot.hpLabel.text = String(Math.max(0, Math.round(currentHp)));
+    applyBattleScars(slot.sprite, pct, slot.creatureId);
   }
 
   function getSlot(id: string): SlotData | undefined {

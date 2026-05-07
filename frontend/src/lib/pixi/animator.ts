@@ -1,6 +1,7 @@
 import { Container, Graphics, Text, Ticker } from 'pixi.js';
 import type { WsFightEvent } from '../schemas/ws';
 import type { ArenaInstance } from './arena';
+import type { ElementEmitter } from './particles';
 import { cameraShake, type DebrisSystem } from './physics';
 
 // ---------------------------------------------------------------------------
@@ -120,38 +121,6 @@ async function flashStage(
   overlay.destroy();
 }
 
-async function emitParticles(
-  stage: Container,
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-  count: number,
-  color: number,
-): Promise<void> {
-  const spread = 24;
-  const particles = Array.from({ length: count }, () => {
-    const p = new Graphics();
-    p.circle(0, 0, 3).fill({ color, alpha: 0.9 });
-    p.x = from.x;
-    p.y = from.y;
-    p.alpha = 0.9;
-    stage.addChild(p);
-    return p;
-  });
-
-  await Promise.all(
-    particles.map((p) => {
-      const dx = (Math.random() - 0.5) * spread;
-      const dy = (Math.random() - 0.5) * spread;
-      return tweenTo(p, { x: to.x + dx, y: to.y + dy, alpha: 0 }, 300);
-    }),
-  );
-
-  particles.forEach((p) => {
-    stage.removeChild(p);
-    p.destroy();
-  });
-}
-
 async function emitTextParticle(
   stage: Container,
   text: string,
@@ -171,7 +140,117 @@ async function emitTextParticle(
   label.destroy();
 }
 
-// Element → debris color mapping
+// ---------------------------------------------------------------------------
+// New visual effects
+// ---------------------------------------------------------------------------
+
+async function shockwaveRing(
+  stage: Container,
+  x: number,
+  y: number,
+  color: number,
+  maxRadius = 80,
+  ms = 350,
+): Promise<void> {
+  const ring = new Graphics();
+  stage.addChild(ring);
+  let elapsed = 0;
+  return new Promise((resolve) => {
+    const fn = (ticker: Ticker) => {
+      elapsed += ticker.deltaMS;
+      const t = Math.min(elapsed / ms, 1);
+      const r = t * maxRadius;
+      const alpha = (1 - t) * 0.70;
+      const sw = Math.max(0.5, 3 - t * 2.2);
+      ring.clear();
+      ring.circle(x, y, r).stroke({ width: sw, color, alpha });
+      if (t >= 1) {
+        stage.removeChild(ring);
+        ring.destroy();
+        Ticker.shared.remove(fn);
+        resolve();
+      }
+    };
+    Ticker.shared.add(fn);
+  });
+}
+
+async function groundDust(
+  stage: Container,
+  x: number,
+  groundY: number,
+  color: number,
+): Promise<void> {
+  const puffs = Array.from({ length: 4 }, (_, i) => {
+    const g = new Graphics();
+    const w = 8 + Math.random() * 7;
+    const h = 3 + Math.random() * 3;
+    g.ellipse(0, 0, w, h).fill({ color, alpha: 0.45 });
+    const spread = (i - 1.5) * 15;
+    g.x = x + spread;
+    g.y = groundY;
+    g.alpha = 0.45;
+    stage.addChild(g);
+    return { g, targetX: x + spread * 1.9 };
+  });
+  await Promise.all(puffs.map(({ g, targetX }) =>
+    tweenTo(g, { x: targetX, y: groundY - 5, alpha: 0 }, 380),
+  ));
+  puffs.forEach(({ g }) => {
+    stage.removeChild(g);
+    if (!g.destroyed) g.destroy();
+  });
+}
+
+async function fireProjectile(
+  stage: Container,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  color: number,
+  ms = 210,
+): Promise<void> {
+  const g = new Graphics();
+  // Arrowhead shape
+  g.poly([0, -7, 5, 5, 0, 2, -5, 5]).fill({ color, alpha: 0.92 });
+  g.x = from.x;
+  g.y = from.y;
+  stage.addChild(g);
+
+  const midX = (from.x + to.x) / 2;
+  const midY = (from.y + to.y) / 2 - 42;
+
+  return new Promise((resolve) => {
+    let elapsed = 0;
+    const fn = (ticker: Ticker) => {
+      elapsed += ticker.deltaMS;
+      const t = Math.min(elapsed / ms, 1);
+      const u = 1 - t;
+      // Quadratic bezier
+      g.x = u * u * from.x + 2 * u * t * midX + t * t * to.x;
+      g.y = u * u * from.y + 2 * u * t * midY + t * t * to.y;
+      // Rotate to face direction of travel
+      if (t < 0.95) {
+        const t2 = Math.min(t + 0.06, 1);
+        const u2 = 1 - t2;
+        const nx = u2 * u2 * from.x + 2 * u2 * t2 * midX + t2 * t2 * to.x;
+        const ny = u2 * u2 * from.y + 2 * u2 * t2 * midY + t2 * t2 * to.y;
+        g.rotation = Math.atan2(ny - g.y, nx - g.x) + Math.PI / 2;
+      }
+      if (t >= 1) {
+        stage.removeChild(g);
+        if (!g.destroyed) g.destroy();
+        Ticker.shared.remove(fn);
+        resolve();
+      }
+    };
+    Ticker.shared.add(fn);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Element color map (for debris tint)
+// ---------------------------------------------------------------------------
+
 const ELEMENT_DEBRIS: Record<string, number> = {
   fire:     0xf05a28,
   void:     0x9b59d4,
@@ -180,7 +259,7 @@ const ELEMENT_DEBRIS: Record<string, number> = {
   electric: 0xf5c518,
 };
 
-function debrisColor(element: unknown): number {
+function debrisColor(element: string | undefined): number {
   return ELEMENT_DEBRIS[String(element)] ?? 0x8a8fa8;
 }
 
@@ -193,7 +272,15 @@ export interface AnimatorInstance {
   reset(): void;
 }
 
-export function createAnimator(arena: ArenaInstance, physics: DebrisSystem): AnimatorInstance {
+/**
+ * elementEmitters is passed by reference — mutate it externally (per fight)
+ * and playEvent will always see the current creature emitters.
+ */
+export function createAnimator(
+  arena: ArenaInstance,
+  physics: DebrisSystem,
+  elementEmitters: Map<string, ElementEmitter>,
+): AnimatorInstance {
   const queue: WsFightEvent[] = [];
   let running = false;
 
@@ -215,20 +302,25 @@ export function createAnimator(arena: ArenaInstance, physics: DebrisSystem): Ani
       case 'attack': {
         if (!actorSlot || !targetSlot) break;
         const dx = targetSlot.homeX - actorSlot.homeX;
-        const targetElement = targetSlot.sprite.parent
-          ? debrisColor(undefined)   // fallback; real element isn't stored on sprite
-          : 0xff4444;
+        const tColor = debrisColor(targetSlot.element);
 
         // Attacker lunges
         await tweenTo(actorSlot.sprite, { x: actorSlot.homeX + dx * 0.32 }, 130);
 
-        // Impact: flash + physics debris + arc knockback + shake — all in parallel
+        // Impact — all in parallel
         await Promise.all([
           tweenTo(actorSlot.sprite, { x: actorSlot.homeX }, 130),
           flashOverlay(targetSlot.sprite, 0xff2222, 160),
-          arcKnockback(targetSlot.sprite, targetSlot.homeX, targetSlot.homeY, dx * -0.35, 280),
+          // Knockback arc then ground dust at landing
+          (async () => {
+            await arcKnockback(targetSlot.sprite, targetSlot.homeX, targetSlot.homeY, dx * -0.35, 280);
+            groundDust(arena.stage, targetSlot.homeX, targetSlot.homeY, tColor);
+          })(),
           cameraShake(arena.stage, 3, 120),
-          Promise.resolve(physics.emit(targetSlot.homeX, targetSlot.homeY - 20, 5, 0xff4444, 1.0)),
+          Promise.resolve(physics.emit(targetSlot.homeX, targetSlot.homeY - 20, 5, tColor, 1.0)),
+          Promise.resolve(elementEmitters.get(evt.actor_id!)?.burst(
+            targetSlot.homeX, targetSlot.homeY - 20, 3, 0.8,
+          )),
         ]);
 
         for (const [id, hp] of Object.entries(evt.hp_remaining)) {
@@ -239,27 +331,35 @@ export function createAnimator(arena: ArenaInstance, physics: DebrisSystem): Ani
 
       case 'ability': {
         if (!actorSlot) break;
-        const abilityColor = 0xb56cf5;
+        const aColor = debrisColor(actorSlot.element);
 
         await tweenScale(actorSlot.sprite, 1.18, 180);
 
         if (targetSlot) {
           const dx = targetSlot.homeX - actorSlot.homeX;
+          // Projectile arc replaces the blob emitParticles
           await Promise.all([
-            emitParticles(
+            fireProjectile(
               arena.stage,
               { x: actorSlot.homeX, y: actorSlot.homeY - 20 },
               { x: targetSlot.homeX, y: targetSlot.homeY - 20 },
-              6,
-              abilityColor,
+              aColor,
+              210,
             ),
             tweenScale(actorSlot.sprite, 1, 180),
             cameraShake(arena.stage, 4, 140),
           ]);
           await Promise.all([
             flashOverlay(targetSlot.sprite, 0xaa44ff, 120),
-            arcKnockback(targetSlot.sprite, targetSlot.homeX, targetSlot.homeY, dx * -0.45, 320),
-            Promise.resolve(physics.emit(targetSlot.homeX, targetSlot.homeY - 15, 7, abilityColor, 1.4)),
+            (async () => {
+              await arcKnockback(targetSlot.sprite, targetSlot.homeX, targetSlot.homeY, dx * -0.45, 320);
+              groundDust(arena.stage, targetSlot.homeX, targetSlot.homeY, debrisColor(targetSlot.element));
+            })(),
+            Promise.resolve(physics.emit(targetSlot.homeX, targetSlot.homeY - 15, 7, aColor, 1.4)),
+            Promise.resolve(elementEmitters.get(evt.actor_id!)?.burst(
+              targetSlot.homeX, targetSlot.homeY - 15, 5, 1.2,
+            )),
+            shockwaveRing(arena.stage, targetSlot.homeX, targetSlot.homeY - 20, aColor, 80, 350),
           ]);
         } else {
           await tweenScale(actorSlot.sprite, 1, 180);
@@ -293,17 +393,20 @@ export function createAnimator(arena: ArenaInstance, physics: DebrisSystem): Ani
         const ls = loserId ? arena.getSlot(loserId) : undefined;
 
         if (ls) {
-          // Direction: creatures on the left spin one way, right the other
           const spinDir = ls.homeX < 400 ? -1 : 1;
+          const koColor = debrisColor(ls.element);
 
-          // Trigger all KO effects simultaneously
+          // Fire all burst effects before the tween
           physics.emit(ls.homeX, ls.homeY - 10, 14, 0xff3333, 2.2);
+          physics.emitLarge(ls.homeX, ls.homeY - 10, 6, koColor, 1.8);
+          elementEmitters.get(loserId!)?.burst(ls.homeX, ls.homeY - 20, 8, 2.0);
 
           await Promise.all([
             tweenTo(ls.sprite, { y: ls.homeY + 90, alpha: 0 }, 650),
             tweenRotation(ls.sprite, Math.PI * 2.5 * spinDir, 650),
             flashStage(arena.stage, 0x220000, 300),
             cameraShake(arena.stage, 8, 250),
+            shockwaveRing(arena.stage, ls.homeX, ls.homeY - 20, 0xff3333, 140, 500),
           ]);
 
           arena.updateHp(loserId!, 0);

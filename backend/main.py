@@ -23,9 +23,14 @@ from backend.db.session import init_db
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    import asyncio
+    from backend.ws.manager import manager as ws_manager
+
     settings = get_settings()
     configure_logging(settings.log_level)
     init_db()
+    # Capture the running event loop so broadcast_sync works before any WS client connects.
+    ws_manager._loop = asyncio.get_running_loop()
     logger.info("Application startup complete")
     try:
         yield

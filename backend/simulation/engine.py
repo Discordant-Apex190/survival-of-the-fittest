@@ -220,7 +220,7 @@ def step_fight(
 
     fight_id = shortuuid.uuid()
     prob_a = compute_win_probability(a_dict, b_dict)
-    manager.broadcast_sync({
+    fight_start_event = {
         "type": "fight_start",
         "fight_id": fight_id,
         "creature_a": {
@@ -231,7 +231,9 @@ def step_fight(
         },
         "prob_a": prob_a,
         "prob_b": round(1 - prob_a, 4),
-    })
+    }
+    manager.start_replay(fight_start_event)
+    manager.broadcast_sync(fight_start_event)
 
     outcome = run_fight(
         a_dict,
@@ -242,7 +244,7 @@ def step_fight(
     )
 
     for evt in outcome.events:
-        manager.broadcast_sync({
+        fight_event = {
             "type": "fight_event",
             "fight_id": fight_id,
             "turn": evt.turn,
@@ -252,7 +254,9 @@ def step_fight(
             "ability_name": evt.ability_name,
             "damage": evt.damage,
             "hp_remaining": evt.hp_remaining,
-        })
+        }
+        manager.record_replay_event(fight_event)
+        manager.broadcast_sync(fight_event)
 
     fight = Fight(
         id=fight_id,
@@ -282,11 +286,13 @@ def step_fight(
 
     session.commit()
 
-    manager.broadcast_sync({
+    fight_end_event = {
         "type": "fight_end",
         "fight_id": fight_id,
         "winner_id": outcome.winner_id,
-    })
+    }
+    manager.finish_replay(fight_end_event)
+    manager.broadcast_sync(fight_end_event)
 
     logger.bind(
         stage="fight",

@@ -1,5 +1,8 @@
 import { Container, Graphics } from 'pixi.js';
 
+// WeakMap so scar Graphics don't keep sprites alive
+const _scarsMap = new WeakMap<Container, Graphics>();
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -206,4 +209,56 @@ export function buildSprite(creature: CreatureData, facing: Facing): Container {
   if (facing === 'right') root.scale.x = -1;
 
   return root;
+}
+
+// ---------------------------------------------------------------------------
+// Battle scars — called on every HP update
+// ---------------------------------------------------------------------------
+
+export function applyBattleScars(sprite: Container, hpPct: number, creatureId: string): void {
+  // Find or create a dedicated scars layer on this sprite
+  let scars = _scarsMap.get(sprite);
+  if (!scars) {
+    scars = new Graphics();
+    sprite.addChild(scars);
+    _scarsMap.set(sprite, scars);
+  }
+
+  scars.clear();
+  if (hpPct >= 0.75) return; // No visible scars above 75% HP
+
+  const h = hashId(creatureId);
+  const r = 34; // approximate body half-size (matches buildSprite body radius range)
+
+  // Semi-transparent dark overlay — grows with damage
+  const overlayAlpha = Math.min(0.45, (0.75 - hpPct) * 0.70);
+  scars.rect(-r * 1.25, -r * 1.25, r * 2.5, r * 2.5).fill({ color: 0x000000, alpha: overlayAlpha });
+
+  // Number of crack lines
+  const crackCount = hpPct < 0.25 ? 6 : hpPct < 0.50 ? 4 : 2;
+
+  for (let i = 0; i < crackCount; i++) {
+    // Derive deterministic crack parameters from the creature's hash
+    const seed = ((h + i * 1_337) ^ (i * 0x9e3779b9)) >>> 0;
+    const startAngle = ((seed & 0xffff) / 65535) * Math.PI * 2;
+    const crackLen   = r * 0.45 + ((seed >> 16 & 0xffff) / 65535) * r * 0.55;
+    const startR     = r * 0.05 + ((seed >> 8 & 0xff) / 255) * r * 0.25;
+
+    let cx = Math.cos(startAngle) * startR;
+    let cy = Math.sin(startAngle) * startR;
+
+    scars.moveTo(cx, cy);
+
+    for (let j = 0; j < 3; j++) {
+      const segSeed = ((seed * (j + 1) * 7_919) ^ seed) >>> 0;
+      const jitter  = ((segSeed & 0xffff) / 65535 - 0.5) * 1.0;
+      const segAngle = startAngle + jitter;
+      const segLen   = crackLen / 3;
+      cx += Math.cos(segAngle) * segLen;
+      cy += Math.sin(segAngle) * segLen;
+      scars.lineTo(cx, cy);
+    }
+
+    scars.stroke({ width: 1.5, color: 0x000000, alpha: 0.65 });
+  }
 }

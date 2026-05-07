@@ -8,28 +8,30 @@
   import { leaderboardStore } from '$lib/stores/leaderboard';
   import { fightStore } from '$lib/stores/fight';
   import { commentaryStore } from '$lib/stores/commentary';
+  import { betStore } from '$lib/stores/bet';
+  import { wsConnected } from '$lib/api/ws';
   import { elementColor, tierColor } from '$lib/theme';
   import type { UpcomingFight } from '$lib/schemas/fight';
   import Arena from '$lib/components/Arena.svelte';
 
   // ---------------------------------------------------------------------------
-  // Betting schemas
+  // Betting (pre-fight matchup from API)
   // ---------------------------------------------------------------------------
 
   const BettingStateSchema = z.union([
     z.object({
-      fight_id: z.string(),
-      creature_a_id: z.string(),
-      creature_a_name: z.string(),
-      creature_a_element: z.string(),
-      creature_b_id: z.string(),
-      creature_b_name: z.string(),
-      creature_b_element: z.string(),
-      prob_a: z.number(),
-      prob_b: z.number(),
-      votes_a: z.number(),
-      votes_b: z.number(),
-      total_votes: z.number(),
+      fight_id:          z.string(),
+      creature_a_id:     z.string(),
+      creature_a_name:   z.string(),
+      creature_a_element:z.string(),
+      creature_b_id:     z.string(),
+      creature_b_name:   z.string(),
+      creature_b_element:z.string(),
+      prob_a:            z.number(),
+      prob_b:            z.number(),
+      votes_a:           z.number(),
+      votes_b:           z.number(),
+      total_votes:       z.number(),
     }),
     z.object({ message: z.string() }),
   ]);
@@ -44,11 +46,19 @@
   let upcoming: UpcomingFight | null = null;
 
   let betting: BettingState | null = null;
-  let myVote: string | null = null;   // creature_id I voted for this fight
-  let votedFightId: string | null = null;
-  let voteLoading = false;
   let betPollInterval: ReturnType<typeof setInterval> | null = null;
   let isBetPolling = false;
+
+  // Bet UI local state
+  const BET_PRESETS = [10, 25, 50, 100];
+  let betAmount = 25;
+  let customAmount = '';
+  let betPlaced = false;
+
+  // Auto-tick
+  let autoTick = false;
+  let autoInterval = 8;   // seconds between ticks
+  let autoTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -69,6 +79,31 @@
     ? Math.round((activeBet.votes_a / activeBet.total_votes) * 100)
     : 50;
 
+  $: effectiveAmount = customAmount !== '' ? parseInt(customAmount) || 0 : betAmount;
+
+  function oddsFor(id: string): number {
+    if (!activeBet) return 2;
+    if (id === activeBet.creature_a_id) return +(1 / activeBet.prob_a).toFixed(2);
+    return +(1 / activeBet.prob_b).toFixed(2);
+  }
+
+  $: pendingBet = $betStore.active?.status === 'pending' ? $betStore.active : null;
+  $: lockedBet  = $betStore.active?.status === 'locked'  ? $betStore.active : null;
+  $: resolvedBet = ($betStore.active?.status === 'won' || $betStore.active?.status === 'lost')
+    ? $betStore.active : null;
+
+  // After fight ends and bet is resolved, show result then auto-dismiss after 4s
+  $: if (resolvedBet) {
+    setTimeout(() => betStore.dismiss(), 4000);
+  }
+
+  // Reset local betPlaced when active bet is gone
+  $: if (!$betStore.active) betPlaced = false;
+
+  // ---------------------------------------------------------------------------
+  // Betting API
+  // ---------------------------------------------------------------------------
+
   async function loadBetting() {
     const r = await get('/betting/current', BettingStateSchema);
     r.match((d) => { betting = d; }, () => {});
@@ -82,52 +117,25 @@
   }
 
   function stopBettingPolling() {
-    if (betPollInterval) {
-      clearInterval(betPollInterval);
-      betPollInterval = null;
-    }
+    if (betPollInterval) { clearInterval(betPollInterval); betPollInterval = null; }
     isBetPolling = false;
     betting = null;
   }
 
   $: if (browser) {
-    if ($fightStore.active) {
-      startBettingPolling();
-    } else {
-      stopBettingPolling();
-    }
+    if ($fightStore.active) startBettingPolling();
+    else stopBettingPolling();
   }
 
-  async function castVote(creatureId: string) {
-    if (!activeBet || voteLoading) return;
-    voteLoading = true;
-    const r = await post(
-      '/betting/vote',
-      { fight_id: activeBet.fight_id, creature_id: creatureId },
-      z.object({ fight_id: z.string(), creature_id: z.string(),
-                  votes_a: z.number(), votes_b: z.number(), total_votes: z.number() }),
-    );
-    r.match(
-      (d) => {
-        myVote = creatureId;
-        votedFightId = activeBet!.fight_id;
-        // Update tally immediately without re-fetching
-        if (activeBet) {
-          betting = {
-            ...activeBet,
-            votes_a: creatureId === activeBet.creature_a_id ? d.votes_a : activeBet.votes_a,
-            votes_b: creatureId === activeBet.creature_b_id ? d.votes_b : activeBet.votes_b,
-            total_votes: d.total_votes,
-          };
-        }
-      },
-      () => {},
-    );
-    voteLoading = false;
+  function placeBet(creatureId: string) {
+    if (!activeBet || betPlaced || effectiveAmount <= 0) return;
+    const odds = oddsFor(creatureId);
+    const ok = betStore.place(activeBet.fight_id, creatureId, effectiveAmount, odds);
+    if (ok) betPlaced = true;
   }
 
   // ---------------------------------------------------------------------------
-  // Tick / leaderboard
+  // Tick / auto-tick
   // ---------------------------------------------------------------------------
 
   onMount(async () => {
@@ -136,35 +144,39 @@
       (creatures) => leaderboardStore.set(creatures),
       (e) => console.warn('Leaderboard load failed:', e.message),
     );
-
     const upResult = await get('/fights/upcoming', UpcomingFightSchema);
-    upResult.match(
-      (data) => { upcoming = data; },
-      () => {},
-    );
-
+    upResult.match((data) => { upcoming = data; }, () => {});
   });
 
   onDestroy(() => {
     stopBettingPolling();
+    stopAuto();
   });
 
   async function runTick() {
+    if (ticking) return;
     ticking = true;
     tickError = '';
     const result = await post('/simulation/tick', { fights_per_tick: 3 }, z.unknown());
-    result.match(
-      () => {},
-      (e) => { tickError = e.message; },
-    );
+    result.match(() => {}, (e) => { tickError = e.message; });
     ticking = false;
-
     const lb = await get('/creatures?limit=20&status=active', z.array(CreatureSummarySchema));
     lb.match((creatures) => leaderboardStore.set(creatures), () => {});
+    if ($fightStore.active) await loadBetting();
+  }
 
-    if ($fightStore.active) {
-      await loadBetting();
-    }
+  function startAuto() {
+    autoTick = true;
+    autoTimer = setInterval(() => { void runTick(); }, autoInterval * 1000);
+  }
+
+  function stopAuto() {
+    autoTick = false;
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  }
+
+  function toggleAuto() {
+    autoTick ? stopAuto() : startAuto();
   }
 
   $: recentEvents = $fightStore.events.slice(-20).reverse();
@@ -193,10 +205,8 @@
 
   <!-- Center — Arena + Fight log + Controls -->
   <section class="center">
-    <!-- Pixi.js arena -->
     <Arena />
 
-    <!-- Fight log -->
     <div class="fight-log-panel">
       <div class="panel-title">Fight Log</div>
       {#if recentEvents.length === 0}
@@ -222,58 +232,144 @@
 
     <!-- Controls -->
     <div class="controls">
-      <button class="btn-tick" on:click={runTick} disabled={ticking}>
+      {#if !$wsConnected}
+        <span class="ws-status connecting">● Connecting…</span>
+      {:else}
+        <span class="ws-status connected">● Live</span>
+      {/if}
+
+      <button class="btn-tick" on:click={runTick} disabled={ticking || autoTick || !$wsConnected}>
         {ticking ? 'Running…' : '▶ Run Tick'}
       </button>
+
+      <div class="auto-row">
+        <button
+          class="btn-auto"
+          class:active={autoTick}
+          on:click={toggleAuto}
+          disabled={ticking || !$wsConnected}
+        >
+          {autoTick ? '⏹ Stop Auto' : '⏩ Auto'}
+        </button>
+        <select class="auto-interval" bind:value={autoInterval} disabled={autoTick}>
+          <option value={4}>4s</option>
+          <option value={8}>8s</option>
+          <option value={15}>15s</option>
+          <option value={30}>30s</option>
+        </select>
+      </div>
+
       {#if tickError}
         <span class="error">{tickError}</span>
       {/if}
     </div>
   </section>
 
-  <!-- Right — Betting + Commentary + Upcoming -->
+  <!-- Right — Betting + Commentary -->
   <aside class="sidebar-right">
-    {#if activeUpcoming}
-      <div class="panel-title">Next Fight</div>
-      <div class="upcoming-card">
-        <div class="up-name" style="color:{elementColor(String(activeUpcoming.creature_a.element ?? ''))}">
-          {String(activeUpcoming.creature_a.name ?? '?')}
-        </div>
-        <div class="up-prob">{(activeUpcoming.prob_a * 100).toFixed(0)}%</div>
-        <div class="up-vs">vs</div>
-        <div class="up-prob">{(activeUpcoming.prob_b * 100).toFixed(0)}%</div>
-        <div class="up-name" style="color:{elementColor(String(activeUpcoming.creature_b.element ?? ''))}">
-          {String(activeUpcoming.creature_b.name ?? '?')}
-        </div>
+
+    <!-- Token balance -->
+    <div class="token-bar">
+      <span class="token-icon">◆</span>
+      <span class="token-count">{$betStore.tokens.toLocaleString()}</span>
+      <span class="token-label">tokens</span>
+      <button class="reset-btn" on:click={() => betStore.reset()} title="Reset tokens to 1000">↺</button>
+    </div>
+
+    <!-- Bet result banner -->
+    {#if resolvedBet}
+      <div class="result-banner" class:won={resolvedBet.status === 'won'} class:lost={resolvedBet.status === 'lost'}>
+        {#if resolvedBet.status === 'won'}
+          Won! +{resolvedBet.payout} tokens
+        {:else}
+          Lost — -{resolvedBet.amount} tokens
+        {/if}
       </div>
     {/if}
 
-    <!-- Betting panel -->
-    {#if activeBet}
-      <div class="panel-title">Spectator Bet</div>
+    <!-- Locked bet in-progress indicator -->
+    {#if lockedBet}
+      <div class="locked-banner">
+        Bet locked: {lockedBet.amount}◆ @ {lockedBet.odds}x
+      </div>
+    {/if}
+
+    <!-- Pre-fight betting panel -->
+    {#if activeBet && !lockedBet && !resolvedBet}
+      <div class="panel-title">Place Bet</div>
       <div class="bet-panel">
-        <div class="bet-row">
-          <button
-            class="bet-btn"
-            class:voted={myVote === activeBet.creature_a_id && votedFightId === activeBet.fight_id}
-            disabled={voteLoading || (votedFightId === activeBet.fight_id)}
-            style="color:{elementColor(activeBet.creature_a_element)}"
-            on:click={() => castVote(activeBet!.creature_a_id)}
-          >
+        <!-- Upcoming odds -->
+        <div class="odds-row">
+          <span class="odds-creature" style="color:{elementColor(activeBet.creature_a_element)}">
             {activeBet.creature_a_name}
-          </button>
-          <span class="bet-sep">vs</span>
+          </span>
+          <span class="odds-num">{(activeBet.prob_a * 100).toFixed(0)}%</span>
+          <span class="odds-sep">vs</span>
+          <span class="odds-num">{(activeBet.prob_b * 100).toFixed(0)}%</span>
+          <span class="odds-creature right" style="color:{elementColor(activeBet.creature_b_element)}">
+            {activeBet.creature_b_name}
+          </span>
+        </div>
+
+        <!-- Amount presets -->
+        <div class="preset-row">
+          {#each BET_PRESETS as p}
+            <button
+              class="preset-btn"
+              class:active={betAmount === p && customAmount === ''}
+              disabled={betPlaced || $betStore.tokens < p}
+              on:click={() => { betAmount = p; customAmount = ''; }}
+            >{p}</button>
+          {/each}
+          <input
+            class="custom-input"
+            type="number"
+            min="1"
+            max={$betStore.tokens}
+            placeholder="custom"
+            bind:value={customAmount}
+            disabled={betPlaced}
+          />
+        </div>
+
+        <!-- Bet buttons -->
+        <div class="bet-btns">
           <button
             class="bet-btn"
-            class:voted={myVote === activeBet.creature_b_id && votedFightId === activeBet.fight_id}
-            disabled={voteLoading || (votedFightId === activeBet.fight_id)}
-            style="color:{elementColor(activeBet.creature_b_element)}"
-            on:click={() => castVote(activeBet!.creature_b_id)}
+            disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
+            on:click={() => placeBet(activeBet!.creature_a_id)}
           >
-            {activeBet.creature_b_name}
+            <span style="color:{elementColor(activeBet.creature_a_element)}">{activeBet.creature_a_name}</span>
+            <span class="payout-hint">→ {Math.floor(effectiveAmount * oddsFor(activeBet.creature_a_id))}◆</span>
+          </button>
+          <button
+            class="bet-btn"
+            disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
+            on:click={() => placeBet(activeBet!.creature_b_id)}
+          >
+            <span style="color:{elementColor(activeBet.creature_b_element)}">{activeBet.creature_b_name}</span>
+            <span class="payout-hint">→ {Math.floor(effectiveAmount * oddsFor(activeBet.creature_b_id))}◆</span>
           </button>
         </div>
-        <!-- Tally bar -->
+
+        {#if pendingBet}
+          <div class="pending-note">
+            Pending: {pendingBet.amount}◆ on
+            <span style="color:{
+              pendingBet.creatureId === activeBet.creature_a_id
+                ? elementColor(activeBet.creature_a_element)
+                : elementColor(activeBet.creature_b_element)
+            }">
+              {pendingBet.creatureId === activeBet.creature_a_id
+                ? activeBet.creature_a_name
+                : activeBet.creature_b_name}
+            </span>
+            (×{pendingBet.odds})
+            <button class="cancel-btn" on:click={() => { betStore.cancel(); betPlaced = false; }}>cancel</button>
+          </div>
+        {/if}
+
+        <!-- Spectator vote bar -->
         <div class="tally-bar">
           <div
             class="tally-a"
@@ -281,21 +377,28 @@
           ></div>
         </div>
         <div class="tally-labels">
-          <span style="color:{elementColor(activeBet.creature_a_element)}">{activeBet.votes_a}</span>
-          <span class="tally-total">{activeBet.total_votes} votes</span>
-          <span style="color:{elementColor(activeBet.creature_b_element)}">{activeBet.votes_b}</span>
+          <span style="color:{elementColor(activeBet.creature_a_element)}">{activeBet.votes_a} votes</span>
+          <span class="tally-total">{activeBet.total_votes} total</span>
+          <span style="color:{elementColor(activeBet.creature_b_element)}">{activeBet.votes_b} votes</span>
         </div>
-        {#if votedFightId === activeBet.fight_id && myVote}
-          <div class="voted-note">
-            Voted for <span style="color:{myVote === activeBet.creature_a_id ? elementColor(activeBet.creature_a_element) : elementColor(activeBet.creature_b_element)}">
-              {myVote === activeBet.creature_a_id ? activeBet.creature_a_name : activeBet.creature_b_name}
-            </span>
-          </div>
-        {/if}
       </div>
     {/if}
 
-    <div class="panel-title" style="margin-top: 16px;">The Chronicler</div>
+    <!-- Bet history -->
+    {#if $betStore.history.length > 0}
+      <div class="panel-title" style="margin-top:12px">Bet History</div>
+      <ul class="history-list">
+        {#each $betStore.history as h}
+          <li class="history-row" class:win={h.result === 'won'} class:loss={h.result === 'lost'}>
+            <span class="h-name">{h.creatureName}</span>
+            <span class="h-result">{h.result === 'won' ? `+${h.payout}` : `-${h.amount}`}◆</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    <!-- Commentary -->
+    <div class="panel-title" style="margin-top:12px">The Chronicler</div>
     {#if $commentaryStore.length === 0}
       <p class="empty">Awaiting the Chronicler…</p>
     {:else}
@@ -311,7 +414,7 @@
 <style>
   .page {
     display: grid;
-    grid-template-columns: 220px 1fr 240px;
+    grid-template-columns: 220px 1fr 260px;
     height: 100%;
     overflow: hidden;
     gap: 1px;
@@ -345,71 +448,28 @@
   }
 
   /* Leaderboard */
-  .lb-list {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
+  .lb-list { list-style: none; display: flex; flex-direction: column; gap: 3px; }
   .lb-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 6px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 10px;
+    display: flex; align-items: center; gap: 6px; padding: 5px 6px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 4px; font-size: 10px;
   }
-
   .rank { color: var(--text-dim); width: 14px; flex-shrink: 0; }
   .name { color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .score { color: var(--text-dim); font-size: 9px; white-space: nowrap; }
-
-  .pill {
-    font-size: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    flex-shrink: 0;
-  }
-
+  .pill { font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
 
   /* Fight log */
-  .fight-log-panel {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .log-list {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    overflow-y: auto;
-    flex: 1;
-  }
-
+  .fight-log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  .log-list { list-style: none; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; }
   .log-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 3px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    background: var(--card);
-    border-left: 2px solid var(--border);
+    display: flex; align-items: center; gap: 8px; padding: 3px 6px;
+    border-radius: 3px; font-size: 10px; background: var(--card); border-left: 2px solid var(--border);
   }
-
-  .log-row.ko       { border-left-color: var(--fail); }
-  .log-row.ability  { border-left-color: var(--rare); }
-  .log-row.attack   { border-left-color: var(--fire); }
-  .log-row.dodge    { border-left-color: var(--text-dim); }
-  .log-row.taunt    { border-left-color: var(--electric); }
-
+  .log-row.ko      { border-left-color: var(--fail); }
+  .log-row.ability { border-left-color: var(--rare); }
+  .log-row.attack  { border-left-color: var(--fire); }
+  .log-row.dodge   { border-left-color: var(--text-dim); }
+  .log-row.taunt   { border-left-color: var(--electric); }
   .turn  { color: var(--text-dim); width: 28px; flex-shrink: 0; }
   .etype { color: var(--text-mid); width: 54px; flex-shrink: 0; }
   .actor { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -417,121 +477,144 @@
   .ability { color: var(--rare); font-size: 9px; flex-shrink: 0; }
 
   /* Controls */
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 0;
-  }
-
+  .controls { display: flex; align-items: center; gap: 10px; padding: 8px 0; flex-wrap: wrap; }
+  .ws-status { font-size: 9px; font-weight: 500; letter-spacing: 0.05em; }
+  .ws-status.connecting { color: var(--text-dim); animation: blink 1.2s ease-in-out infinite; }
+  .ws-status.connected  { color: #4ade80; }
+  @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+  .auto-row { display: flex; align-items: center; gap: 4px; }
   .btn-tick {
-    background: var(--card);
-    border: 1px solid var(--border-hi);
-    color: var(--text);
-    font-size: 11px;
-    padding: 6px 16px;
-    border-radius: 4px;
-    transition: background 0.12s, border-color 0.12s;
+    background: var(--card); border: 1px solid var(--border-hi); color: var(--text);
+    font-size: 11px; padding: 6px 16px; border-radius: 4px; transition: background 0.12s, border-color 0.12s;
   }
-
-  .btn-tick:hover:not(:disabled) {
-    background: var(--border);
-    border-color: var(--text-dim);
+  .btn-tick:hover:not(:disabled) { background: var(--border); border-color: var(--text-dim); }
+  .btn-tick:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-auto {
+    background: var(--card); border: 1px solid var(--border); color: var(--text-mid);
+    font-size: 10px; padding: 5px 10px; border-radius: 4px; cursor: pointer;
+    transition: all 0.12s;
   }
-
-  .btn-tick:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .btn-auto.active { border-color: var(--rare); color: var(--rare); }
+  .btn-auto:disabled { opacity: 0.4; cursor: not-allowed; }
+  .auto-interval {
+    background: var(--card); border: 1px solid var(--border); color: var(--text-mid);
+    font-size: 10px; padding: 4px 6px; border-radius: 4px;
   }
-
   .error { color: var(--fail); font-size: 10px; }
 
-  /* Right sidebar */
-  .upcoming-card {
-    display: grid;
-    grid-template-columns: 1fr auto auto auto 1fr;
-    align-items: center;
-    gap: 6px;
-    padding: 8px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+  /* Token bar */
+  .token-bar {
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .token-icon { color: var(--electric); font-size: 12px; }
+  .token-count { color: var(--text); font-size: 14px; font-weight: 700; }
+  .token-label { color: var(--text-dim); font-size: 9px; flex: 1; }
+  .reset-btn {
+    background: none; border: none; color: var(--text-dim); font-size: 12px;
+    cursor: pointer; padding: 2px 4px; border-radius: 3px;
+  }
+  .reset-btn:hover { color: var(--text); background: var(--border); }
+
+  /* Result banner */
+  .result-banner {
+    text-align: center; padding: 8px 12px; border-radius: 6px;
+    font-size: 13px; font-weight: 700;
+    animation: fadeIn 0.3s ease;
+  }
+  .result-banner.won  { background: #1a3320; color: #4ade80; border: 1px solid #4ade8055; }
+  .result-banner.lost { background: #2d1515; color: #f87171; border: 1px solid #f8717155; }
+
+  .locked-banner {
+    text-align: center; padding: 6px 10px; border-radius: 5px;
+    font-size: 10px; color: var(--text-mid);
+    background: var(--card); border: 1px solid var(--electric)44;
   }
 
-  .up-name { font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .up-prob { font-size: 9px; color: var(--text-mid); }
-  .up-vs   { font-size: 9px; color: var(--text-dim); }
-
-  .commentary-list {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .commentary-line {
-    font-size: 11px;
-    color: var(--text-mid);
-    font-style: italic;
-    padding: 6px 8px;
-    border-left: 2px solid var(--rare);
-    background: var(--card);
-    border-radius: 0 4px 4px 0;
-    line-height: 1.5;
-  }
-
-  /* Betting panel */
+  /* Bet panel */
   .bet-panel {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; display: flex; flex-direction: column; gap: 8px;
   }
-  .bet-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
+  .odds-row {
+    display: grid; grid-template-columns: 1fr auto auto auto 1fr;
+    align-items: center; gap: 4px; font-size: 10px;
   }
-  .bet-btn {
-    flex: 1;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+  .odds-creature { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .odds-creature.right { text-align: right; }
+  .odds-num { color: var(--text-mid); font-size: 9px; text-align: center; }
+  .odds-sep { color: var(--text-dim); font-size: 9px; }
+
+  .preset-row { display: flex; gap: 4px; align-items: center; }
+  .preset-btn {
+    flex: 1; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text-mid); font-size: 10px; padding: 4px 2px; border-radius: 4px;
+    cursor: pointer; transition: all 0.1s;
+  }
+  .preset-btn.active { border-color: var(--electric); color: var(--electric); }
+  .preset-btn:hover:not(:disabled) { border-color: var(--text-dim); color: var(--text); }
+  .preset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .custom-input {
+    width: 60px; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text-mid); font-size: 10px; padding: 4px 5px; border-radius: 4px;
     font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 600;
-    padding: 5px 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: border-color 0.1s, background 0.1s;
-    cursor: pointer;
   }
-  .bet-btn:hover:not(:disabled) { border-color: currentColor; background: var(--card); }
-  .bet-btn:disabled { opacity: 0.4; cursor: default; }
-  .bet-btn.voted { border-color: currentColor; background: var(--card); }
-  .bet-sep { font-size: 9px; color: var(--text-dim); flex-shrink: 0; }
+  .custom-input:focus { outline: none; border-color: var(--electric); }
+
+  .bet-btns { display: flex; flex-direction: column; gap: 5px; }
+  .bet-btn {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-family: var(--font-mono); font-size: 10px;
+    cursor: pointer; transition: all 0.12s; text-align: left;
+  }
+  .bet-btn:hover:not(:disabled) { border-color: var(--text-dim); background: var(--card); }
+  .bet-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .payout-hint { color: var(--text-dim); font-size: 9px; }
+
+  .pending-note {
+    font-size: 9px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  }
+  .cancel-btn {
+    background: none; border: 1px solid var(--border); color: var(--text-dim);
+    font-size: 9px; padding: 1px 5px; border-radius: 3px; cursor: pointer;
+    margin-left: auto;
+  }
+  .cancel-btn:hover { color: var(--fail); border-color: var(--fail); }
 
   .tally-bar {
-    height: 4px;
-    background: var(--border);
-    border-radius: 2px;
-    overflow: hidden;
+    height: 3px; background: var(--border); border-radius: 2px; overflow: hidden;
   }
   .tally-a { height: 100%; border-radius: 2px; min-width: 2px; transition: width 0.3s; }
   .tally-labels {
-    display: flex;
-    justify-content: space-between;
-    font-size: 9px;
-    color: var(--text-mid);
+    display: flex; justify-content: space-between; font-size: 8px; color: var(--text-dim);
   }
   .tally-total { color: var(--text-dim); font-size: 8px; }
-  .voted-note {
-    font-size: 9px;
-    color: var(--text-dim);
-    text-align: center;
+
+  /* Bet history */
+  .history-list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+  .history-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 3px 6px; border-radius: 3px; font-size: 9px; background: var(--card);
+    border-left: 2px solid var(--border);
+  }
+  .history-row.win  { border-left-color: #4ade80; }
+  .history-row.loss { border-left-color: var(--fail); }
+  .h-name { color: var(--text-mid); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .h-result { flex-shrink: 0; font-weight: 600; font-size: 10px; }
+  .history-row.win  .h-result { color: #4ade80; }
+  .history-row.loss .h-result { color: var(--fail); }
+
+  /* Commentary */
+  .commentary-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .commentary-line {
+    font-size: 11px; color: var(--text-mid); font-style: italic;
+    padding: 6px 8px; border-left: 2px solid var(--rare);
+    background: var(--card); border-radius: 0 4px 4px 0; line-height: 1.5;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 </style>
