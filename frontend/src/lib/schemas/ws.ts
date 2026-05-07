@@ -49,6 +49,12 @@ const CommentarySchema = z.object({
   threads: z.array(z.unknown()),
 });
 
+const VoteUpdateSchema = z.object({
+  type: z.literal('vote_update'),
+  fight_id: z.string(),
+  votes: z.record(z.number()),
+});
+
 // All WS payloads pass through this before touching any store.
 export const WsEventSchema = z.discriminatedUnion('type', [
   FightPreviewSchema,
@@ -57,6 +63,7 @@ export const WsEventSchema = z.discriminatedUnion('type', [
   FightEndSchema,
   LeaderboardUpdateSchema,
   CommentarySchema,
+  VoteUpdateSchema,
 ]);
 
 export type WsEvent        = z.infer<typeof WsEventSchema>;
@@ -66,3 +73,4 @@ export type WsFightEvent   = z.infer<typeof FightEventSchema>;
 export type WsFightEnd     = z.infer<typeof FightEndSchema>;
 export type WsLeaderboard  = z.infer<typeof LeaderboardUpdateSchema>;
 export type WsCommentary   = z.infer<typeof CommentarySchema>;
+export type WsVoteUpdate   = z.infer<typeof VoteUpdateSchema>;

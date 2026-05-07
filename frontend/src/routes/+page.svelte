@@ -6,6 +6,7 @@
   import { leaderboardStore } from '$lib/stores/leaderboard';
   import { fightStore } from '$lib/stores/fight';
   import { betStore } from '$lib/stores/bet';
+  import { voteStore } from '$lib/stores/votes';
   import { wsConnected } from '$lib/api/ws';
   import { elementColor, tierColor } from '$lib/theme';
   import Arena from '$lib/components/Arena.svelte';
@@ -23,26 +24,13 @@
   let customAmount = '';
   let betPlaced = false;
 
-  // Countdown during fight_preview window
-  let countdown = 0;
-  let countdownTimer: ReturnType<typeof setInterval> | null = null;
+  // Vote progress during betting window
+  $: votesIn   = $voteStore.fight_id === $fightStore.fight_id
+    ? Object.values($voteStore.votes).reduce((a, b) => a + b, 0)
+    : 0;
 
-  $: if ($fightStore.previewing) {
-    // Reset bet placed flag for new preview
-    betPlaced = !!$betStore.active;
-    countdown = 3;
-    if (countdownTimer) clearInterval(countdownTimer);
-    countdownTimer = setInterval(() => {
-      countdown = Math.max(0, countdown - 1);
-      if (countdown === 0 && countdownTimer) {
-        clearInterval(countdownTimer);
-        countdownTimer = null;
-      }
-    }, 1000);
-  } else if (!$fightStore.previewing && countdownTimer) {
-    clearInterval(countdownTimer);
-    countdownTimer = null;
-  }
+  // Reset betPlaced when a new preview window opens
+  $: if ($fightStore.previewing) betPlaced = !!$betStore.active;
 
   // Auto-tick
   let autoTick = false;
@@ -81,7 +69,6 @@
 
   onDestroy(() => {
     stopAuto();
-    if (countdownTimer) clearInterval(countdownTimer);
   });
 
   async function runTick() {
@@ -240,7 +227,9 @@
 
       <div class="panel-title">
         Place Bet
-        <span class="countdown-badge">{countdown}s</span>
+        <span class="vote-badge">
+          {#if betPlaced}waiting…{:else}open{/if}
+        </span>
       </div>
       <div class="bet-panel">
         <!-- Odds -->
@@ -278,11 +267,16 @@
           <button
             class="bet-btn"
             disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
-            on:click={() => {
+            on:click={async () => {
               if (!$fightStore.fight_id) return;
               const odds = +(1 / pA).toFixed(2);
               const ok = betStore.place($fightStore.fight_id, caId, effectiveAmount, odds);
-              if (ok) betPlaced = true;
+              if (ok) {
+                betPlaced = true;
+                // Signal backend that a bet has been placed (triggers threshold check)
+                await post('/betting/vote',
+                  { fight_id: $fightStore.fight_id, creature_id: caId }, z.unknown());
+              }
             }}
           >
             <span style="color:{elementColor(caEl)}">{caName}</span>
@@ -291,11 +285,15 @@
           <button
             class="bet-btn"
             disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
-            on:click={() => {
+            on:click={async () => {
               if (!$fightStore.fight_id) return;
               const odds = +(1 / pB).toFixed(2);
               const ok = betStore.place($fightStore.fight_id, cbId, effectiveAmount, odds);
-              if (ok) betPlaced = true;
+              if (ok) {
+                betPlaced = true;
+                await post('/betting/vote',
+                  { fight_id: $fightStore.fight_id, creature_id: cbId }, z.unknown());
+              }
             }}
           >
             <span style="color:{elementColor(cbEl)}">{cbName}</span>
@@ -303,14 +301,21 @@
           </button>
         </div>
 
+        <!-- Live bet tally (updates as votes arrive via WS) -->
+        <div class="vote-progress">
+          <span class="vote-count">{votesIn}</span>
+          <span class="vote-label">
+            {votesIn === 1 ? 'bet in' : 'bets in'} · fight starts at 50%
+          </span>
+        </div>
+
         {#if pendingBet}
           <div class="pending-note">
-            Pending: {pendingBet.amount}◆ on
+            Locked: {pendingBet.amount}◆ on
             <span style="color:{pendingBet.creatureId === caId ? elementColor(caEl) : elementColor(cbEl)}">
               {pendingBet.creatureId === caId ? caName : cbName}
             </span>
             (×{pendingBet.odds})
-            <button class="cancel-btn" on:click={() => { betStore.cancel(); betPlaced = false; }}>cancel</button>
           </div>
         {/if}
       </div>
@@ -423,14 +428,22 @@
   }
   .error { color: var(--fail); font-size: 10px; }
 
-  /* Countdown badge inside panel-title */
-  .countdown-badge {
+  /* Vote badge inside panel-title */
+  .vote-badge {
     float: right;
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 9px;
+    font-weight: 600;
     color: var(--electric);
-    font-variant-numeric: tabular-nums;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
+  .vote-progress {
+    display: flex; align-items: baseline; gap: 5px;
+    padding: 4px 0 2px;
+    border-top: 1px solid var(--border);
+  }
+  .vote-count { font-size: 14px; font-weight: 700; color: var(--electric); }
+  .vote-label { font-size: 9px; color: var(--text-dim); }
 
   /* Token bar */
   .token-bar {

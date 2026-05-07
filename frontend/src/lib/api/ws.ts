@@ -5,6 +5,7 @@ import { WsEventSchema } from '../schemas/ws';
 import { fightStore } from '../stores/fight';
 import { leaderboardStore } from '../stores/leaderboard';
 import { betStore } from '../stores/bet';
+import { voteStore } from '../stores/votes';
 
 let socket: WebSocket | null = null;
 let pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -62,6 +63,7 @@ export function connect(): void {
         betStore.onFightEnd(ev, names);
       })
       .with({ type: 'leaderboard_update' }, (ev) => leaderboardStore.set(ev.data))
+      .with({ type: 'vote_update' },        (ev) => voteStore.update(ev.fight_id, ev.votes))
       .with({ type: 'commentary' },         () => { /* commentary removed */ })
       .exhaustive();
   };

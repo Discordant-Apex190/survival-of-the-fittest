@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -229,7 +228,10 @@ def step_fight(
     }
     prob_b = round(1 - prob_a, 4)
 
-    # Broadcast preview so the frontend can open the betting window
+    # Open betting window BEFORE broadcasting the preview
+    manager.start_betting_window(fight_id)
+
+    # Broadcast preview — clients now have time to place bets
     manager.broadcast_sync({
         "type": "fight_preview",
         "fight_id": fight_id,
@@ -239,8 +241,8 @@ def step_fight(
         "prob_b": prob_b,
     })
 
-    # Give spectators 3 seconds to place bets before the fight begins
-    time.sleep(3)
+    # Block until ≥50% of connected clients have bet, or 12s max
+    manager.wait_for_bets(fight_id, max_wait=12.0)
 
     manager.broadcast_sync({
         "type": "fight_start",

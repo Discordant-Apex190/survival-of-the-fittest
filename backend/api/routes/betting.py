@@ -153,6 +153,9 @@ async def cast_vote(
 
     votes = _store.cast(payload.fight_id, payload.creature_id)
 
+    # Signal the betting-window mechanic: one client has placed a bet
+    manager.record_bet(payload.fight_id)
+
     # Determine the other creature in this pair
     parts = payload.fight_id.split("_")
     other_id = next((p for p in parts if p != payload.creature_id), None)
