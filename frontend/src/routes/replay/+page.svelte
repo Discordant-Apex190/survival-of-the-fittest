@@ -1,10 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { z } from 'zod';
   import { get } from '$lib/api/client';
   import { FightSummarySchema, FightDetailSchema, FightEventSchema } from '$lib/schemas/fight';
   import type { FightSummary, FightDetail, FightEvent } from '$lib/schemas/fight';
   import { elementColor } from '$lib/theme';
+
+  const REPLAY_PREFS_KEY = 'sotf_replay_prefs_v1';
+
+  interface ReplayPrefs {
+    playbackSpeed: number;
+    eventSearch: string;
+    activeEventTypes: string[];
+    bookmarksByFight: Record<string, number[]>;
+  }
 
   // ---------------------------------------------------------------------------
   // State
@@ -16,6 +25,12 @@
   let turn = 0;                       // current scrub position (0 = start)
   let autoPlay = false;
   let autoInterval: ReturnType<typeof setInterval> | null = null;
+  let playbackSpeed = 1;
+  let bookmarkTurns: number[] = [];
+  let eventSearch = '';
+  let activeEventTypes: string[] = [];
+  let bookmarksByFight: Record<string, number[]> = {};
+  let prefsLoaded = false;
 
   let fightsLoading = true;
   let detailLoading = false;
@@ -33,6 +48,14 @@
 
   $: maxTurn = events.length ? Math.max(...events.map((e) => e.turn)) : 0;
   $: visibleEvents = events.filter((e) => e.turn <= turn).slice().reverse();
+  $: availableEventTypes = [...new Set(events.map((e) => e.event_type))].sort();
+  $: filteredEvents = visibleEvents.filter((e) => {
+    const typeMatch = activeEventTypes.length === 0 || activeEventTypes.includes(e.event_type);
+    const q = eventSearch.trim().toLowerCase();
+    if (!q) return typeMatch;
+    const searchBlob = `${e.event_type} ${e.ability_name ?? ''} ${e.actor_id ?? ''} ${e.target_id ?? ''}`.toLowerCase();
+    return typeMatch && searchBlob.includes(q);
+  });
   $: turnsByIdx = [...new Set(events.map((e) => e.turn))].sort((a, b) => a - b);
 
   // HP snapshot at current turn — last hp_remaining that contains each creature
@@ -45,6 +68,10 @@
     }
     return snap;
   })();
+
+  $: if (prefsLoaded) {
+    saveReplayPrefs();
+  }
 
   // ---------------------------------------------------------------------------
   // Load fight list
@@ -78,6 +105,7 @@
     selected = null;
     events = [];
     turn = 0;
+    bookmarkTurns = bookmarksByFight[id] ? [...bookmarksByFight[id]] : [];
 
     const [dRes, evRes] = await Promise.all([
       get(`/fights/${id}`, FightDetailSchema),
@@ -107,15 +135,34 @@
   function startAutoPlay() {
     if (!events.length) return;
     autoPlay = true;
+    const intervalMs = Math.max(80, Math.round(300 / playbackSpeed));
     autoInterval = setInterval(() => {
       if (turn >= maxTurn) { stopAutoPlay(); return; }
       turn += 1;
-    }, 300);
+    }, intervalMs);
   }
 
   function stopAutoPlay() {
     autoPlay = false;
     if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
+  }
+
+  function toggleBookmark(value: number) {
+    if (bookmarkTurns.includes(value)) {
+      bookmarkTurns = bookmarkTurns.filter((v) => v !== value);
+      syncBookmarksForSelectedFight();
+      return;
+    }
+    bookmarkTurns = [...bookmarkTurns, value].sort((a, b) => a - b);
+    syncBookmarksForSelectedFight();
+  }
+
+  function toggleEventTypeFilter(eventType: string) {
+    if (activeEventTypes.includes(eventType)) {
+      activeEventTypes = activeEventTypes.filter((v) => v !== eventType);
+      return;
+    }
+    activeEventTypes = [...activeEventTypes, eventType];
   }
 
   // ---------------------------------------------------------------------------
@@ -137,7 +184,46 @@
     return Math.max(0, Math.min(100, (hp / maxHp) * 100));
   }
 
-  onMount(() => loadFights());
+  function syncBookmarksForSelectedFight() {
+    if (!selected?.id) return;
+    bookmarksByFight = {
+      ...bookmarksByFight,
+      [selected.id]: [...bookmarkTurns],
+    };
+  }
+
+  function loadReplayPrefs() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(REPLAY_PREFS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as ReplayPrefs;
+      playbackSpeed = typeof parsed.playbackSpeed === 'number' ? parsed.playbackSpeed : 1;
+      eventSearch = parsed.eventSearch ?? '';
+      activeEventTypes = Array.isArray(parsed.activeEventTypes) ? parsed.activeEventTypes : [];
+      bookmarksByFight = parsed.bookmarksByFight ?? {};
+    } catch {
+      // Ignore malformed local preferences and continue with defaults.
+    }
+  }
+
+  function saveReplayPrefs() {
+    if (typeof localStorage === 'undefined') return;
+    const payload: ReplayPrefs = {
+      playbackSpeed,
+      eventSearch,
+      activeEventTypes,
+      bookmarksByFight,
+    };
+    localStorage.setItem(REPLAY_PREFS_KEY, JSON.stringify(payload));
+  }
+
+  onMount(() => {
+    loadReplayPrefs();
+    prefsLoaded = true;
+    void loadFights();
+  });
+  onDestroy(() => stopAutoPlay());
 </script>
 
 <div class="replay-page">
@@ -158,17 +244,16 @@
     {:else}
       <div class="fight-list">
         {#each fights as f}
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-static-element-interactions -->
-          <div
+          <button
             class="fight-row"
             class:active={selected?.id === f.id}
             on:click={() => selectFight(f.id)}
+            aria-label={`Open replay for fight ${f.id}`}
           >
             <span class="fight-tier">{f.tier}</span>
             <span class="fight-turns dim">{f.duration_turns}t</span>
             <span class="fight-time dim">{fmtTime(f.created_at).split(',')[0]}</span>
-          </div>
+          </button>
         {/each}
         {#if hasMore}
           <button class="btn-more" on:click={() => loadFights(true)} disabled={loadingMore}>
@@ -233,29 +318,71 @@
       <!-- Scrubber -->
       {#if events.length}
         <div class="scrubber">
-          <button class="btn-ctrl" on:click={() => { stopAutoPlay(); turn = 0; }}>⏮</button>
-          <button class="btn-ctrl" on:click={() => { stopAutoPlay(); turn = Math.max(0, turn - 1); }}>◀</button>
-          <button class="btn-ctrl play" on:click={toggleAutoPlay}>
+          <button class="btn-ctrl" aria-label="Jump to start" on:click={() => { stopAutoPlay(); turn = 0; }}>⏮</button>
+          <button class="btn-ctrl" aria-label="Previous turn" on:click={() => { stopAutoPlay(); turn = Math.max(0, turn - 1); }}>◀</button>
+          <button class="btn-ctrl play" aria-label={autoPlay ? 'Pause replay autoplay' : 'Start replay autoplay'} on:click={toggleAutoPlay}>
             {autoPlay ? '⏸' : '▶'}
           </button>
-          <button class="btn-ctrl" on:click={() => { stopAutoPlay(); turn = Math.min(maxTurn, turn + 1); }}>▶</button>
-          <button class="btn-ctrl" on:click={() => { stopAutoPlay(); turn = maxTurn; }}>⏭</button>
+          <button class="btn-ctrl" aria-label="Next turn" on:click={() => { stopAutoPlay(); turn = Math.min(maxTurn, turn + 1); }}>▶</button>
+          <button class="btn-ctrl" aria-label="Jump to end" on:click={() => { stopAutoPlay(); turn = maxTurn; }}>⏭</button>
           <input
             type="range"
             min="0"
             max={maxTurn}
             bind:value={turn}
             on:input={stopAutoPlay}
+            aria-label="Replay turn scrubber"
             class="scrub-range"
           />
+          <select bind:value={playbackSpeed} class="speed-select" aria-label="Replay speed">
+            <option value={0.5}>0.5x</option>
+            <option value={1}>1x</option>
+            <option value={1.5}>1.5x</option>
+            <option value={2}>2x</option>
+          </select>
+          <button class="btn-ctrl" aria-label="Toggle bookmark for current turn" on:click={() => toggleBookmark(turn)}>★</button>
+        </div>
+
+        <div class="replay-tools">
+          <input
+            class="event-search"
+            type="search"
+            bind:value={eventSearch}
+            placeholder="Search events"
+            aria-label="Search replay events"
+          />
+          <div class="event-filters" role="group" aria-label="Event type filters">
+            {#each availableEventTypes as eventType}
+              <button
+                class="filter-chip"
+                class:active={activeEventTypes.includes(eventType)}
+                on:click={() => toggleEventTypeFilter(eventType)}
+                aria-label={`Toggle ${eventType} filter`}
+              >
+                {eventType}
+              </button>
+            {/each}
+          </div>
+          {#if bookmarkTurns.length > 0}
+            <div class="bookmark-row" role="group" aria-label="Replay bookmarks">
+              {#each bookmarkTurns as bookmarkTurn}
+                <button class="bookmark-chip" on:click={() => { stopAutoPlay(); turn = bookmarkTurn; }}>
+                  T{bookmarkTurn}
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
       {:else}
         <p class="hint">No events recorded for this fight.</p>
       {/if}
 
       <!-- Event log -->
-      <div class="event-log">
-        {#each visibleEvents as e}
+      <div class="event-log" role="log" aria-live="polite" aria-atomic="false">
+        {#if filteredEvents.length === 0}
+          <p class="hint">No events match current filters.</p>
+        {:else}
+        {#each filteredEvents as e}
           <div class="ev-row ev-{e.event_type}" class:ev-latest={e.turn === turn}>
             <span class="ev-turn">T{e.turn}</span>
             <span class="ev-type">{e.event_type}</span>
@@ -265,6 +392,7 @@
             {/if}
           </div>
         {/each}
+        {/if}
       </div>
     {/if}
   </div>
@@ -308,6 +436,10 @@
     gap: 8px;
     padding: 7px 12px;
     cursor: pointer;
+    width: 100%;
+    background: transparent;
+    border: none;
+    text-align: left;
     border-bottom: 1px solid var(--border);
     font-size: 11px;
     transition: background 0.1s;
@@ -416,6 +548,55 @@
     padding: 0;
   }
 
+  .speed-select {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text-mid);
+    font-size: 10px;
+    border-radius: 4px;
+    padding: 3px 6px;
+  }
+
+  .replay-tools {
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .event-search {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+
+  .event-filters,
+  .bookmark-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .filter-chip,
+  .bookmark-chip {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text-mid);
+    border-radius: 999px;
+    font-size: 10px;
+    padding: 3px 8px;
+  }
+
+  .filter-chip.active {
+    border-color: var(--uncommon);
+    color: var(--uncommon);
+  }
+
   /* Event log */
   .event-log {
     flex: 1;
@@ -451,4 +632,62 @@
     padding: 2px 8px;
   }
   .btn-ghost.sm { padding: 1px 5px; font-size: 10px; }
+
+  @media (max-width: 960px) {
+    .replay-page {
+      grid-template-columns: 1fr;
+      grid-template-rows: 180px 1fr;
+    }
+
+    .list-col {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .fight-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      align-content: start;
+    }
+
+    .scrubber {
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 8px 10px;
+    }
+
+    .btn-ctrl {
+      width: 26px;
+      height: 22px;
+      font-size: 11px;
+    }
+
+    .speed-select {
+      font-size: 9px;
+      padding: 2px 5px;
+    }
+
+    .replay-tools {
+      padding: 8px 10px;
+      gap: 6px;
+    }
+
+    .ev-row {
+      padding: 4px 10px;
+      gap: 7px;
+    }
+
+    .ev-type {
+      min-width: 58px;
+    }
+
+    .combatants {
+      padding: 12px;
+      gap: 10px;
+    }
+
+    .c-name {
+      font-size: 12px;
+    }
+  }
 </style>

@@ -9,9 +9,26 @@ import { voteStore } from '../stores/votes';
 
 let socket: WebSocket | null = null;
 let pingInterval: ReturnType<typeof setInterval> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** True when the WebSocket connection is open and ready. */
 export const wsConnected = writable(false);
+
+interface WsConnectionState {
+  connected: boolean;
+  reconnecting: boolean;
+  retryCount: number;
+  lastError: string | null;
+}
+
+const initialConnectionState: WsConnectionState = {
+  connected: false,
+  reconnecting: false,
+  retryCount: 0,
+  lastError: null,
+};
+
+export const wsConnectionState = writable<WsConnectionState>(initialConnectionState);
 
 export function connect(): void {
   if (socket?.readyState === WebSocket.OPEN) return;
@@ -20,6 +37,12 @@ export function connect(): void {
 
   socket.onopen = () => {
     wsConnected.set(true);
+    wsConnectionState.set({
+      connected: true,
+      reconnecting: false,
+      retryCount: 0,
+      lastError: null,
+    });
     pingInterval = setInterval(() => socket?.send('ping'), 25_000);
   };
 
@@ -41,6 +64,7 @@ export function connect(): void {
     match(event)
       .with({ type: 'fight_preview' }, (ev) => {
         fightStore.preview(ev);
+        voteStore.clear();
         betStore.onFightPreview(ev);
       })
       .with({ type: 'fight_start' }, (ev) => {
@@ -52,12 +76,10 @@ export function connect(): void {
         const fs = get(fightStore);
         const names: Record<string, string> = {};
         if (fs.creature_a) {
-          const a = fs.creature_a as Record<string, unknown>;
-          names[a.id as string] = a.name as string;
+          names[fs.creature_a.id] = fs.creature_a.name;
         }
         if (fs.creature_b) {
-          const b = fs.creature_b as Record<string, unknown>;
-          names[b.id as string] = b.name as string;
+          names[fs.creature_b.id] = fs.creature_b.name;
         }
         fightStore.end(ev);
         betStore.onFightEnd(ev, names);
@@ -70,19 +92,41 @@ export function connect(): void {
 
   socket.onclose = () => {
     wsConnected.set(false);
+    wsConnectionState.update((s) => ({
+      connected: false,
+      reconnecting: true,
+      retryCount: s.retryCount + 1,
+      lastError: s.lastError,
+    }));
     if (pingInterval) {
       clearInterval(pingInterval);
       pingInterval = null;
     }
-    setTimeout(connect, 3_000);
+    reconnectTimer = setTimeout(connect, 3_000);
   };
 
-  socket.onerror = () => socket?.close();
+  socket.onerror = () => {
+    wsConnectionState.update((s) => ({
+      ...s,
+      lastError: 'WebSocket error. Retrying…',
+    }));
+    socket?.close();
+  };
 }
 
 export function disconnect(): void {
   wsConnected.set(false);
+  wsConnectionState.set({
+    connected: false,
+    reconnecting: false,
+    retryCount: 0,
+    lastError: null,
+  });
   if (pingInterval) clearInterval(pingInterval);
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   socket?.close();
   socket = null;
 }

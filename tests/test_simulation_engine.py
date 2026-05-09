@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlmodel import Session, select
 
 from backend.db.models import Creature, Fight, FightEvent
@@ -57,6 +58,19 @@ def test_step_fight_creates_fight_events(db_session: Session) -> None:
     ).all()
     assert len(events) > 0
     assert events[-1].event_type == "ko"
+
+
+def test_step_fight_rejects_non_active_creatures(db_session: Session) -> None:
+    a_id = _generate_creature(db_session)
+    b_id = _generate_creature(db_session)
+    b = db_session.get(Creature, b_id)
+    assert b is not None
+    b.status = "retired"
+    db_session.add(b)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="Creature not active"):
+        step_fight(db_session, (a_id, b_id), seed="test-inactive")
 
 
 def test_step_resolve_updates_scores(db_session: Session, sim_settings) -> None:

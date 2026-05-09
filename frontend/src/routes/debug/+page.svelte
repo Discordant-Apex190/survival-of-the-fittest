@@ -192,7 +192,7 @@
       <span class="status-text dim">checking…</span>
     {/if}
     <button class="btn-ghost" on:click={checkHealth}>↺ health</button>
-    <span class="spacer" />
+    <span class="spacer"></span>
     <span class="status-text dim">{creatures.length} creatures in DB</span>
   </div>
 

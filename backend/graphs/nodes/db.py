@@ -103,73 +103,93 @@ def make_write_evolution_node(
         if parent is None:
             raise ValueError(f"parent creature {parent_id} not found in DB")
 
-        decision = state["evolution_decision"]
-        boosts: dict[str, int] = decision.get("stat_boosts", {})
-        new_stats = {k: v + boosts.get(k, 0) for k, v in parent.stats.items()}
-        new_lore = state.get("evolution_updated_lore") or parent.lore
+        try:
+            decision = state["evolution_decision"]
+            boosts: dict[str, int] = decision.get("stat_boosts", {})
+            new_stats = {k: v + boosts.get(k, 0) for k, v in parent.stats.items()}
+            new_lore = state.get("evolution_updated_lore") or parent.lore
 
-        child_id = shortuuid.uuid()
-        child = Creature(
-            id=child_id,
-            name=parent.name,
-            tier=parent.tier,
-            element=parent.element,
-            generation=parent.generation + 1,
-            parent_id=parent.id,
-            stats=new_stats,
-            visual_descriptor=parent.visual_descriptor,
-            behavior_weights=parent.behavior_weights,
-            lore=new_lore,
-            personality=parent.personality,
-            fighting_style=parent.fighting_style,
-        )
-        session.add(child)
+            from backend.graphs.nodes.validators import TIER_BUDGETS
 
-        parent_abilities = session.exec(
-            select(Ability).where(Ability.creature_id == parent_id)
-        ).all()
-        for ab in parent_abilities:
-            session.add(
-                Ability(
-                    id=shortuuid.uuid(),
-                    creature_id=child_id,
-                    name=ab.name,
-                    type=ab.type,
-                    energy_cost=ab.energy_cost,
-                    cooldown=ab.cooldown,
-                    effect=ab.effect,
-                    description=ab.description,
-                )
+            _, _, max_ability_slots = TIER_BUDGETS[parent.tier]
+
+            child_id = shortuuid.uuid()
+            child = Creature(
+                id=child_id,
+                name=parent.name,
+                tier=parent.tier,
+                element=parent.element,
+                generation=parent.generation + 1,
+                parent_id=parent.id,
+                stats=new_stats,
+                visual_descriptor=parent.visual_descriptor,
+                behavior_weights=parent.behavior_weights,
+                lore=new_lore,
+                personality=parent.personality,
+                fighting_style=parent.fighting_style,
             )
+            session.add(child)
 
-        new_ability = state.get("evolution_new_ability")
-        if new_ability:
-            session.add(
-                Ability(
-                    id=shortuuid.uuid(),
-                    creature_id=child_id,
-                    name=new_ability["name"],
-                    type=new_ability["type"],
-                    energy_cost=new_ability["energy_cost"],
-                    cooldown=new_ability["cooldown"],
-                    effect=new_ability["effect"],
-                    description=new_ability["description"],
+            parent_abilities = session.exec(
+                select(Ability).where(Ability.creature_id == parent_id)
+            ).all()
+            copied_abilities = parent_abilities[:max_ability_slots]
+            for ab in copied_abilities:
+                session.add(
+                    Ability(
+                        id=shortuuid.uuid(),
+                        creature_id=child_id,
+                        name=ab.name,
+                        type=ab.type,
+                        energy_cost=ab.energy_cost,
+                        cooldown=ab.cooldown,
+                        effect=ab.effect,
+                        description=ab.description,
+                    )
                 )
+
+            new_ability = state.get("evolution_new_ability")
+            persisted_new_ability = False
+            if new_ability and len(copied_abilities) < max_ability_slots:
+                session.add(
+                    Ability(
+                        id=shortuuid.uuid(),
+                        creature_id=child_id,
+                        name=new_ability["name"],
+                        type=new_ability["type"],
+                        energy_cost=new_ability["energy_cost"],
+                        cooldown=new_ability["cooldown"],
+                        effect=new_ability["effect"],
+                        description=new_ability["description"],
+                    )
+                )
+                persisted_new_ability = True
+            elif new_ability:
+                logger.bind(
+                    stage="write_evolution",
+                    parent_id=parent_id,
+                    max_ability_slots=max_ability_slots,
+                ).warning("evolution | skipping new ability due to slot cap")
+
+            parent.status = "retired"
+            session.add(parent)
+
+            evolution_record = Evolution(
+                id=shortuuid.uuid(),
+                parent_id=parent.id,
+                child_id=child_id,
+                trigger="win_threshold",
+                changes={"stat_boosts": boosts, "new_ability": persisted_new_ability},
+                evolution_reasoning=decision.get("reasoning", ""),
             )
-
-        parent.status = "retired"
-        session.add(parent)
-
-        evolution_record = Evolution(
-            id=shortuuid.uuid(),
-            parent_id=parent.id,
-            child_id=child_id,
-            trigger="win_threshold",
-            changes={"stat_boosts": boosts, "new_ability": bool(new_ability)},
-            evolution_reasoning=decision.get("reasoning", ""),
-        )
-        session.add(evolution_record)
-        session.commit()
+            session.add(evolution_record)
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.bind(stage="write_evolution", parent_id=parent_id).exception(
+                "evolution | failed to persist child, rolled back"
+            )
+            raise
 
         logger.bind(stage="write_evolution", parent_id=parent_id, child_id=child_id).info(
             "evolution | child persisted"

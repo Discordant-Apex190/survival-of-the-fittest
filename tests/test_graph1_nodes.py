@@ -134,7 +134,7 @@ def test_stats_node_ability_count_within_slots() -> None:
     node = make_stats_node(PROVIDER)
     result = node(make_state(seed_params=SEED_COMMON, concept=concept))
 
-    assert 1 <= len(result["abilities"]) <= 1  # common max_slots=1, ability_count=min(1,2)
+    assert 1 <= len(result["abilities"]) <= 2  # common max_slots=2
 
 
 def test_stats_node_rare_ability_count_within_slots() -> None:
@@ -142,7 +142,7 @@ def test_stats_node_rare_ability_count_within_slots() -> None:
     node = make_stats_node(PROVIDER)
     result = node(make_state(seed_params=SEED_RARE, concept=concept))
 
-    assert 1 <= len(result["abilities"]) <= 3  # rare max_slots=3
+    assert 1 <= len(result["abilities"]) <= 4  # rare max_slots=4
 
 
 # ---------------------------------------------------------------------------

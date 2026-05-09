@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import '../app.css';
-  import { connect, disconnect } from '$lib/api/ws';
+  import { connect, disconnect, wsConnectionState } from '$lib/api/ws';
 
   const NAV = [
     { href: '/',          label: 'Spectator' },
@@ -26,6 +26,17 @@
   </header>
 
   <main>
+    {#if $wsConnectionState.reconnecting}
+      <div class="ws-toast" role="status" aria-live="polite" aria-atomic="true">
+        <span class="dot">●</span>
+        <span>
+          Reconnecting live feed (attempt {$wsConnectionState.retryCount})
+          {#if $wsConnectionState.lastError}
+            · {$wsConnectionState.lastError}
+          {/if}
+        </span>
+      </div>
+    {/if}
     <slot />
   </main>
 </div>
@@ -80,5 +91,33 @@
   main {
     flex: 1;
     overflow: hidden;
+    position: relative;
+  }
+
+  .ws-toast {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--card);
+    border: 1px solid var(--retry);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  .dot {
+    color: var(--retry);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
   }
 </style>

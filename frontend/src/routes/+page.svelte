@@ -9,7 +9,8 @@
   import { voteStore } from '$lib/stores/votes';
   import { wsConnected } from '$lib/api/ws';
   import { elementColor, tierColor } from '$lib/theme';
-  import Arena from '$lib/components/Arena.svelte';
+
+  let ArenaComponent: typeof import('$lib/components/Arena.svelte').default | null = null;
 
   // ---------------------------------------------------------------------------
   // State
@@ -23,6 +24,7 @@
   let betAmount = 25;
   let customAmount = '';
   let betPlaced = false;
+  let votePending = false;
 
   // Vote progress during betting window
   $: votesIn   = $voteStore.fight_id === $fightStore.fight_id
@@ -60,6 +62,8 @@
   // ---------------------------------------------------------------------------
 
   onMount(async () => {
+    const arenaModule = await import('$lib/components/Arena.svelte');
+    ArenaComponent = arenaModule.default;
     const result = await get('/creatures?limit=20&status=active', z.array(CreatureSummarySchema));
     result.match(
       (creatures) => leaderboardStore.set(creatures),
@@ -75,12 +79,11 @@
     if (ticking) return;
     ticking = true;
     tickError = '';
-    const result = await post('/simulation/tick', { fights_per_tick: 3 }, z.unknown());
+    const result = await post('/simulation/tick', { fights_per_tick: 1 }, z.unknown());
     result.match(() => {}, (e) => { tickError = e.message; });
     ticking = false;
     const lb = await get('/creatures?limit=20&status=active', z.array(CreatureSummarySchema));
     lb.match((creatures) => leaderboardStore.set(creatures), () => {});
-    if ($fightStore.active) await loadBetting();
   }
 
   function startAuto() {
@@ -95,6 +98,23 @@
 
   function toggleAuto() {
     autoTick ? stopAuto() : startAuto();
+  }
+
+  async function submitVote(fightId: string, creatureId: string): Promise<boolean> {
+    const result = await post(
+      '/betting/vote',
+      { fight_id: fightId, creature_id: creatureId },
+      z.unknown(),
+    );
+    let ok = true;
+    result.match(
+      () => {},
+      (e) => {
+        ok = false;
+        tickError = `Bet vote failed: ${e.message}`;
+      },
+    );
+    return ok;
   }
 
   $: recentEvents = $fightStore.events.slice(-20).reverse();
@@ -123,14 +143,18 @@
 
   <!-- Center — Arena + Fight log + Controls -->
   <section class="center">
-    <Arena />
+    {#if ArenaComponent}
+      <svelte:component this={ArenaComponent} />
+    {:else}
+      <div class="arena-loading" role="status" aria-live="polite">Loading arena renderer…</div>
+    {/if}
 
     <div class="fight-log-panel">
       <div class="panel-title">Fight Log</div>
       {#if recentEvents.length === 0}
         <p class="empty">Waiting for a fight…</p>
       {:else}
-        <ul class="log-list">
+        <ul class="log-list" role="log" aria-live="polite" aria-atomic="false">
           {#each recentEvents as ev}
             <li class="log-row {ev.event_type}">
               <span class="turn">T{ev.turn}</span>
@@ -156,7 +180,12 @@
         <span class="ws-status connected">● Live</span>
       {/if}
 
-      <button class="btn-tick" on:click={runTick} disabled={ticking || autoTick || !$wsConnected}>
+      <button
+        class="btn-tick"
+        on:click={runTick}
+        aria-label="Run one simulation tick"
+        disabled={ticking || autoTick || !$wsConnected}
+      >
         {ticking ? 'Running…' : '▶ Run Tick'}
       </button>
 
@@ -165,11 +194,12 @@
           class="btn-auto"
           class:active={autoTick}
           on:click={toggleAuto}
+          aria-label={autoTick ? 'Stop automatic simulation ticks' : 'Start automatic simulation ticks'}
           disabled={ticking || !$wsConnected}
         >
           {autoTick ? '⏹ Stop Auto' : '⏩ Auto'}
         </button>
-        <select class="auto-interval" bind:value={autoInterval} disabled={autoTick}>
+        <select class="auto-interval" bind:value={autoInterval} aria-label="Auto tick interval" disabled={autoTick}>
           <option value={4}>4s</option>
           <option value={8}>8s</option>
           <option value={15}>15s</option>
@@ -178,7 +208,7 @@
       </div>
 
       {#if tickError}
-        <span class="error">{tickError}</span>
+        <span class="error" role="alert">{tickError}</span>
       {/if}
     </div>
   </section>
@@ -191,7 +221,12 @@
       <span class="token-icon">◆</span>
       <span class="token-count">{$betStore.tokens.toLocaleString()}</span>
       <span class="token-label">tokens</span>
-      <button class="reset-btn" on:click={() => betStore.reset()} title="Reset tokens to 1000">↺</button>
+      <button
+        class="reset-btn"
+        on:click={() => betStore.reset()}
+        title="Reset tokens to 1000"
+        aria-label="Reset tokens to 1000"
+      >↺</button>
     </div>
 
     <!-- Bet result banner -->
@@ -214,14 +249,14 @@
 
     <!-- Pre-fight betting panel — only visible during the 3-second preview window -->
     {#if $fightStore.previewing && !lockedBet && !resolvedBet}
-      {@const ca = $fightStore.creature_a as Record<string,unknown>}
-      {@const cb = $fightStore.creature_b as Record<string,unknown>}
-      {@const caId  = ca?.id  as string}
-      {@const cbId  = cb?.id  as string}
-      {@const caEl  = ca?.element as string}
-      {@const cbEl  = cb?.element as string}
-      {@const caName = ca?.name as string}
-      {@const cbName = cb?.name as string}
+      {@const ca = $fightStore.creature_a}
+      {@const cb = $fightStore.creature_b}
+      {@const caId  = ca?.id ?? ''}
+      {@const cbId  = cb?.id ?? ''}
+      {@const caEl  = ca?.element ?? 'fire'}
+      {@const cbEl  = cb?.element ?? 'void'}
+      {@const caName = ca?.name ?? 'Unknown A'}
+      {@const cbName = cb?.name ?? 'Unknown B'}
       {@const pA = $fightStore.prob_a}
       {@const pB = $fightStore.prob_b}
 
@@ -248,6 +283,7 @@
               class="preset-btn"
               class:active={betAmount === p && customAmount === ''}
               disabled={betPlaced || $betStore.tokens < p}
+              aria-label={`Set bet amount to ${p}`}
               on:click={() => { betAmount = p; customAmount = ''; }}
             >{p}</button>
           {/each}
@@ -258,6 +294,7 @@
             max={$betStore.tokens}
             placeholder="custom"
             bind:value={customAmount}
+            aria-label="Custom bet amount"
             disabled={betPlaced}
           />
         </div>
@@ -266,16 +303,21 @@
         <div class="bet-btns">
           <button
             class="bet-btn"
-            disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
+            disabled={votePending || betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
+            aria-label={`Bet ${effectiveAmount} tokens on ${caName}`}
             on:click={async () => {
-              if (!$fightStore.fight_id) return;
+              if (!$fightStore.fight_id || votePending) return;
               const odds = +(1 / pA).toFixed(2);
               const ok = betStore.place($fightStore.fight_id, caId, effectiveAmount, odds);
               if (ok) {
+                votePending = true;
                 betPlaced = true;
-                // Signal backend that a bet has been placed (triggers threshold check)
-                await post('/betting/vote',
-                  { fight_id: $fightStore.fight_id, creature_id: caId }, z.unknown());
+                const sent = await submitVote($fightStore.fight_id, caId);
+                if (!sent) {
+                  betStore.cancel();
+                  betPlaced = false;
+                }
+                votePending = false;
               }
             }}
           >
@@ -284,15 +326,21 @@
           </button>
           <button
             class="bet-btn"
-            disabled={betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
+            disabled={votePending || betPlaced || $betStore.tokens < effectiveAmount || effectiveAmount <= 0}
+            aria-label={`Bet ${effectiveAmount} tokens on ${cbName}`}
             on:click={async () => {
-              if (!$fightStore.fight_id) return;
+              if (!$fightStore.fight_id || votePending) return;
               const odds = +(1 / pB).toFixed(2);
               const ok = betStore.place($fightStore.fight_id, cbId, effectiveAmount, odds);
               if (ok) {
+                votePending = true;
                 betPlaced = true;
-                await post('/betting/vote',
-                  { fight_id: $fightStore.fight_id, creature_id: cbId }, z.unknown());
+                const sent = await submitVote($fightStore.fight_id, cbId);
+                if (!sent) {
+                  betStore.cancel();
+                  betPlaced = false;
+                }
+                votePending = false;
               }
             }}
           >
@@ -383,6 +431,19 @@
   .name { color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .score { color: var(--text-dim); font-size: 9px; white-space: nowrap; }
   .pill { font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+
+  .arena-loading {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: 1px solid var(--border-hi);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--text-dim);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
 
   /* Fight log */
   .fight-log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }

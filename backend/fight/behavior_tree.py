@@ -127,6 +127,15 @@ FIGHT_TREE: BTNode = Selector(
         Action("ability"),
     ),
 
+    # --- Overcharge: high-energy aggressive creatures spend energy explosively ---
+    Sequence(
+        Condition(lambda ctx: ctx.energy >= 55),
+        Condition(lambda ctx: ctx.has_ability),
+        Condition(lambda ctx: ctx.aggression > 0.45),
+        Probability(lambda ctx: 0.28 + min(0.2, ctx.aggression * 0.25)),
+        Action("ability"),
+    ),
+
     # --- FleeToCounter: cunning creature bails at low HP to set up counter ---
     Sequence(
         Condition(lambda ctx: ctx.hp_ratio < 0.30),
@@ -146,6 +155,14 @@ FIGHT_TREE: BTNode = Selector(
     Sequence(
         Condition(lambda ctx: ctx.caution > 0.60),
         Probability(lambda ctx: ctx.caution * 0.50),
+        Action("defend"),
+    ),
+
+    # --- LastStand: cautious low-HP creatures defend more often ---
+    Sequence(
+        Condition(lambda ctx: ctx.hp_ratio < 0.45),
+        Condition(lambda ctx: ctx.caution > 0.45),
+        Probability(lambda ctx: min(0.75, 0.25 + ctx.caution * 0.65)),
         Action("defend"),
     ),
 

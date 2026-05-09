@@ -37,6 +37,14 @@ export const CreatureSummarySchema = z.object({
   fighting_style: z.string(),
 });
 
+export const FightCreatureSchema = CreatureSummarySchema.pick({
+  id: true,
+  name: true,
+  tier: true,
+  element: true,
+  stats: true,
+});
+
 export const CreatureDetailSchema = CreatureSummarySchema.extend({
   lore: z.string(),
   personality: z.string(),
@@ -51,3 +59,4 @@ export type Ability         = z.infer<typeof AbilitySchema>;
 export type Taunt           = z.infer<typeof TauntSchema>;
 export type CreatureSummary = z.infer<typeof CreatureSummarySchema>;
 export type CreatureDetail  = z.infer<typeof CreatureDetailSchema>;
+export type FightCreature   = z.infer<typeof FightCreatureSchema>;

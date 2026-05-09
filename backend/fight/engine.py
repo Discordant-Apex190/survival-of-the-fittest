@@ -26,10 +26,12 @@ from transitions import Machine
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_TURNS = 30
-MOMENTUM_BONUS = 0.05       # per consecutive hit: +5% damage
+MAX_TURNS = 36
+MOMENTUM_BONUS = 0.035      # per consecutive hit: +3.5% damage
 LOW_HP_RATIO = 0.30         # below 30% HP → behaviour shifts
 ABILITY_ENERGY_REGEN = 10   # energy regenerated per turn
+DAMAGE_VARIANCE_MIN = 0.92
+DAMAGE_VARIANCE_MAX = 1.08
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +148,7 @@ class TurnEvent:
     ability_name: str | None
     damage: int | None
     hp_remaining: dict[str, int]
+    ability_effect: str | None = None
     notes: str = ""
 
 
@@ -163,22 +166,24 @@ def compute_damage(
     is_counter: bool = False,
 ) -> int:
     """Base damage: max(1, atk - def * 0.4) scaled by momentum + state modifiers."""
-    base = max(1.0, attacker.attack - defender.defense * 0.4)
+    base = max(1.0, attacker.attack - defender.defense * 0.55)
     momentum_mult = 1.0 + MOMENTUM_BONUS * min(attacker.momentum, 5)
 
     # State modifiers
     if is_rage:
-        base *= 1.5
+        base *= 1.35
     if is_counter:
-        base *= 1.3
+        base *= 1.22
     if defender.defending:
-        base *= 0.5
+        base *= 0.6
 
     if ability:
         # Ability adds a flat bonus proportional to energy_cost
-        base += ability.get("energy_cost", 0) * 0.5
+        base += ability.get("energy_cost", 0) * 0.35
 
-    raw = base * momentum_mult
+    variance = attacker.rng.uniform(DAMAGE_VARIANCE_MIN, DAMAGE_VARIANCE_MAX)
+
+    raw = base * momentum_mult * variance
     return max(1, int(raw))
 
 
@@ -354,6 +359,7 @@ def run_fight(
                     actor_id=attacker.creature_id,
                     target_id=defender.creature_id,
                     ability_name=chosen_ability["name"] if chosen_ability else None,
+                    ability_effect=chosen_ability.get("effect") if chosen_ability else None,
                     damage=dmg,
                     hp_remaining=_hp_snapshot(),
                     notes="rage" if is_rage else ("counter" if is_flee_bait else ""),
@@ -388,8 +394,13 @@ def run_fight(
                     events=events,
                 )
 
-    # Max turns reached — winner is whoever has more HP remaining
-    if ca.hp >= cb.hp:
+    # Max turns reached — winner is whoever has more HP remaining.
+    # Tie-break on speed to avoid defaulting to creature A on equal HP.
+    if ca.hp > cb.hp:
+        winner, loser = ca, cb
+    elif cb.hp > ca.hp:
+        winner, loser = cb, ca
+    elif ca.speed >= cb.speed:
         winner, loser = ca, cb
     else:
         winner, loser = cb, ca

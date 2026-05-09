@@ -11,6 +11,7 @@
   let arena: ArenaInstance | null = null;
   let animator: AnimatorInstance | null = null;
   let physics: DebrisSystem | null = null;
+  let initError = '';
 
   // Shared mutable map — animator holds a reference, we mutate it per fight
   const elementEmitters = new Map<string, ElementEmitter>();
@@ -31,9 +32,14 @@
   }
 
   onMount(async () => {
-    arena = await createArena(mountEl);
-    physics = createDebrisSystem(arena.stage);
-    animator = createAnimator(arena, physics, elementEmitters);
+    try {
+      arena = await createArena(mountEl);
+      physics = createDebrisSystem(arena.stage);
+      animator = createAnimator(arena, physics, elementEmitters);
+      initError = '';
+    } catch (e) {
+      initError = e instanceof Error ? e.message : String(e);
+    }
   });
 
   onDestroy(() => {
@@ -51,8 +57,8 @@
       animator.reset();
 
       // Destroy old emitters and create fresh ones for this fight's elements
-      const caData = creature_a as CreatureData;
-      const cbData = creature_b as CreatureData;
+      const caData: CreatureData = creature_a;
+      const cbData: CreatureData = creature_b;
       destroyEmitters();
       elementEmitters.set(caData.id, createElementEmitter(arena.stage, caData.element));
       elementEmitters.set(cbData.id, createElementEmitter(arena.stage, cbData.element));
@@ -98,6 +104,9 @@
 </script>
 
 <div class="arena-wrap">
+  {#if initError}
+    <div class="arena-error">Arena unavailable: {initError}</div>
+  {/if}
   <div bind:this={mountEl} class="canvas-mount"></div>
   <button class="record-btn" class:active={recording} on:click={toggleRecord}>
     {recording ? '⏹ Stop' : '⏺ Rec'}
@@ -117,6 +126,16 @@
     border: 1px solid #363a50;
     border-radius: 8px;
     overflow: hidden;
+  }
+
+  .arena-error {
+    margin-bottom: 8px;
+    border: 1px solid #ef4444;
+    background: #13151e;
+    color: #ef4444;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 10px;
   }
 
   .canvas-mount :global(canvas) {

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+import shortuuid
 from sqlmodel import Session, select
 
 from backend.db.models import Ability, Creature, Evolution
 from backend.db.session import engine
+from backend.graphs.nodes.db import make_write_evolution_node
 from backend.graphs.nodes.gemini import MockGeminiProvider, node_analyse_history
 from backend.graphs.nodes.validators import (
     EVOLUTION_BONUS,
@@ -399,3 +402,119 @@ def test_evolve_rejects_retired_creature(client) -> None:
     r = client.post(f"/creatures/{parent_id}/evolve")
     assert r.status_code == 409
     assert "retired" in r.json()["detail"]
+
+
+def test_write_evolution_enforces_ability_slot_cap() -> None:
+    parent_id = shortuuid.uuid()
+    with Session(engine) as session:
+        parent = Creature(
+            id=parent_id,
+            name="Cap Tester",
+            tier="common",
+            element="fire",
+            generation=1,
+            stats={"health": 20, "attack": 20, "defense": 20, "speed": 20},
+            visual_descriptor={"silhouette": "lean"},
+            behavior_weights={"aggression": 0.5},
+            lore="base lore",
+            personality="focused",
+            fighting_style="rushdown",
+        )
+        session.add(parent)
+        session.add(
+            Ability(
+                id=shortuuid.uuid(),
+                creature_id=parent_id,
+                name="Starter Flame",
+                type="fire",
+                energy_cost=10,
+                cooldown=1,
+                effect="damage",
+                description="starter",
+            )
+        )
+        session.commit()
+
+        node = make_write_evolution_node(session)
+        child_id = node(
+            {
+                "parent_creature": {"id": parent_id},
+                "evolution_decision": {
+                    "stat_boosts": {"health": 1},
+                    "new_ability_slot": True,
+                    "reasoning": "test slot cap",
+                },
+                "evolution_updated_lore": "evolved lore",
+                "evolution_new_ability": {
+                    "name": "Overflow Ability",
+                    "type": "fire",
+                    "energy_cost": 15,
+                    "cooldown": 2,
+                    "effect": "stun",
+                    "description": "should be skipped at cap",
+                },
+            }
+        )["creature_id"]
+
+    with Session(engine) as verify:
+        child_abilities = verify.exec(select(Ability).where(Ability.creature_id == child_id)).all()
+        assert len(child_abilities) == 2
+        names = {ability.name for ability in child_abilities}
+        assert names == {"Starter Flame", "Overflow Ability"}
+
+        evo = verify.exec(select(Evolution).where(Evolution.child_id == child_id)).first()
+        assert evo is not None
+        assert evo.changes.get("new_ability") is True
+
+
+def test_write_evolution_rolls_back_on_failure() -> None:
+    parent_id = shortuuid.uuid()
+    with Session(engine) as session:
+        parent = Creature(
+            id=parent_id,
+            name="Rollback Tester",
+            tier="uncommon",
+            element="void",
+            generation=1,
+            stats={"health": 25, "attack": 25, "defense": 25, "speed": 25},
+            visual_descriptor={"silhouette": "lean"},
+            behavior_weights={"aggression": 0.5},
+            lore="base lore",
+            personality="focused",
+            fighting_style="rushdown",
+        )
+        session.add(parent)
+        session.commit()
+
+        node = make_write_evolution_node(session)
+        with pytest.raises(KeyError):
+            node(
+                {
+                    "parent_creature": {"id": parent_id},
+                    "evolution_decision": {
+                        "stat_boosts": {"health": 1},
+                        "new_ability_slot": True,
+                        "reasoning": "force failure",
+                    },
+                    "evolution_updated_lore": "new lore",
+                    "evolution_new_ability": {
+                        "name": "Broken Ability",
+                        "type": "void",
+                        "energy_cost": 10,
+                        "cooldown": 1,
+                        # Missing required key: effect
+                        "description": "invalid payload",
+                    },
+                }
+            )
+
+    with Session(engine) as verify:
+        persisted_parent = verify.get(Creature, parent_id)
+        assert persisted_parent is not None
+        assert persisted_parent.status == "active"
+
+        children = verify.exec(select(Creature).where(Creature.parent_id == parent_id)).all()
+        assert children == []
+
+        evolutions = verify.exec(select(Evolution).where(Evolution.parent_id == parent_id)).all()
+        assert evolutions == []

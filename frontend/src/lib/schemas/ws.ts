@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { CreatureSummarySchema } from './creature';
+import { CreatureSummarySchema, FightCreatureSchema } from './creature';
 
 const FightPreviewSchema = z.object({
   type: z.literal('fight_preview'),
   fight_id: z.string(),
-  creature_a: z.record(z.unknown()),
-  creature_b: z.record(z.unknown()),
+  creature_a: FightCreatureSchema,
+  creature_b: FightCreatureSchema,
   prob_a: z.number(),
   prob_b: z.number(),
 });
@@ -13,8 +13,8 @@ const FightPreviewSchema = z.object({
 const FightStartSchema = z.object({
   type: z.literal('fight_start'),
   fight_id: z.string(),
-  creature_a: z.record(z.unknown()),
-  creature_b: z.record(z.unknown()),
+  creature_a: FightCreatureSchema,
+  creature_b: FightCreatureSchema,
   prob_a: z.number(),
   prob_b: z.number(),
 });
@@ -27,6 +27,7 @@ const FightEventSchema = z.object({
   actor_id: z.string().nullable(),
   target_id: z.string().nullable(),
   ability_name: z.string().nullable(),
+  ability_effect: z.string().nullable().optional(),
   damage: z.number().nullable(),
   hp_remaining: z.record(z.number()),
 });

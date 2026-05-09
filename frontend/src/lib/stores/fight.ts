@@ -1,12 +1,15 @@
 import { writable } from 'svelte/store';
 import type { WsFightEnd, WsFightEvent, WsFightPreview, WsFightStart } from '../schemas/ws';
+import type { FightCreature } from '../schemas/creature';
+
+const MAX_STORED_EVENTS = 120;
 
 interface FightState {
   active:     boolean;
   previewing: boolean;   // true during the 3-second betting window before fight_start
   fight_id:   string | null;
-  creature_a: Record<string, unknown> | null;
-  creature_b: Record<string, unknown> | null;
+  creature_a: FightCreature | null;
+  creature_b: FightCreature | null;
   prob_a:     number;
   prob_b:     number;
   events:     WsFightEvent[];
@@ -51,11 +54,19 @@ function createFightStore() {
         creature_b: ev.creature_b,
         prob_a:     ev.prob_a,
         prob_b:     ev.prob_b,
+        events:     s.fight_id === ev.fight_id ? s.events : [],
+        winner_id:  null,
       })),
     addEvent: (ev: WsFightEvent) =>
-      update((s) => ({ ...s, events: [...s.events, ev] })),
+      update((s) => {
+        if (!s.fight_id || s.fight_id !== ev.fight_id) return s;
+        return { ...s, events: [...s.events, ev].slice(-MAX_STORED_EVENTS) };
+      }),
     end: (ev: WsFightEnd) =>
-      update((s) => ({ ...s, active: false, previewing: false, winner_id: ev.winner_id })),
+      update((s) => {
+        if (!s.fight_id || s.fight_id !== ev.fight_id) return s;
+        return { ...s, active: false, previewing: false, winner_id: ev.winner_id };
+      }),
     reset: () => set(initial),
   };
 }

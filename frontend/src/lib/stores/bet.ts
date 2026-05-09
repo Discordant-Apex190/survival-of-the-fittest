@@ -109,8 +109,8 @@ function createBetStore() {
       update((s) => {
         if (!s.active || s.active.status !== 'pending') return s;
         const fighters = [
-          (ev.creature_a as Record<string, unknown>).id as string,
-          (ev.creature_b as Record<string, unknown>).id as string,
+          ev.creature_a.id,
+          ev.creature_b.id,
         ];
         if (fighters.includes(s.active.creatureId)) {
           return persist({ ...s, active: { ...s.active, status: 'locked' } });

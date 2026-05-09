@@ -212,6 +212,10 @@ def step_fight(
 
     if a is None or b is None:
         raise ValueError(f"Creature not found: {a_id!r} or {b_id!r}")
+    if a.status != "active" or b.status != "active":
+        raise ValueError(
+            f"Creature not active: {a_id!r}={a.status!r}, {b_id!r}={b.status!r}"
+        )
 
     a_dict = _creature_to_dict(a)
     b_dict = _creature_to_dict(b)
@@ -270,6 +274,7 @@ def step_fight(
             "actor_id": evt.actor_id,
             "target_id": evt.target_id,
             "ability_name": evt.ability_name,
+            "ability_effect": evt.ability_effect,
             "damage": evt.damage,
             "hp_remaining": evt.hp_remaining,
         })

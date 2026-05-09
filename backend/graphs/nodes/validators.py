@@ -7,10 +7,10 @@ from loguru import logger
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 TIER_BUDGETS: dict[str, tuple[int, int, int]] = {
-    "common": (80, 25, 1),
-    "uncommon": (100, 30, 2),
-    "rare": (125, 38, 3),
-    "legendary": (160, 50, 4),
+    "common": (80, 25, 2),
+    "uncommon": (100, 30, 3),
+    "rare": (125, 38, 4),
+    "legendary": (160, 50, 5),
 }
 
 

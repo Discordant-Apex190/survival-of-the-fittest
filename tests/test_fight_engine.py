@@ -198,8 +198,8 @@ def test_compute_damage_base() -> None:
     d = _make_combatant("b", attack=5, defense=10)
     dmg = compute_damage(a, d)
     assert dmg >= 1
-    # base = max(1, 20 - 10*0.4) = max(1, 16) = 16
-    assert dmg == 16
+    # Tuned baseline is around 14-16 with small bounded variance.
+    assert 12 <= dmg <= 17
 
 
 def test_compute_damage_minimum_one() -> None:
@@ -353,6 +353,15 @@ def test_run_fight_max_turns_ends_fight() -> None:
     b = _creature("b", health=20, attack=1, defense=100, speed=10, caution=0.9, aggression=0.1)
     outcome = run_fight(a, b, seed="timeout-test", max_turns=5)
     assert outcome.turns <= 5
+    assert outcome.events[-1].notes == "timeout"
+
+
+def test_run_fight_timeout_tie_breaks_by_speed() -> None:
+    a = _creature("a", health=20, attack=1, defense=100, speed=12, caution=0.9, aggression=0.1)
+    b = _creature("b", health=20, attack=1, defense=100, speed=9, caution=0.9, aggression=0.1)
+    outcome = run_fight(a, b, seed="timeout-tie-speed", max_turns=0)
+    assert outcome.winner_id == "a"
+    assert outcome.loser_id == "b"
     assert outcome.events[-1].notes == "timeout"
 
 
