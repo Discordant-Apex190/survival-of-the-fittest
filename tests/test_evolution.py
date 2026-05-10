@@ -204,9 +204,9 @@ def test_validate_evolution_budget_passes_small_boost() -> None:
 
 
 def test_validate_evolution_budget_fails_over_ceiling() -> None:
-    parent = _make_parent(tier="common")  # budget=80, ceiling=90
-    # boost by 11 — total becomes 91 > 90
-    decision = {"stat_boosts": {"health": 11}, "new_ability_slot": False, "reasoning": ""}
+    parent = _make_parent(tier="common")  # evolves to uncommon: budget=100, ceiling=110
+    # boost by 31 — total becomes 111 > 110
+    decision = {"stat_boosts": {"health": 31}, "new_ability_slot": False, "reasoning": ""}
     state = _make_state(parent=parent, evolution_decision=decision)
     result = node_validate_evolution_budget(state)
     assert any("exceeds budget ceiling" in e for e in result["validation_errors"])
@@ -215,9 +215,9 @@ def test_validate_evolution_budget_fails_over_ceiling() -> None:
 def test_validate_evolution_budget_fails_single_stat_cap() -> None:
     parent = _make_parent(
         tier="common",
-        stats={"health": 25, "attack": 20, "defense": 20, "speed": 15},
+        stats={"health": 30, "attack": 20, "defense": 20, "speed": 10},
     )
-    # boost health by 1 makes it 26 > common max_single (25)
+    # boost health by 1 makes it 31 > evolved uncommon max_single (30)
     decision = {"stat_boosts": {"health": 1}, "new_ability_slot": False, "reasoning": ""}
     state = _make_state(parent=parent, evolution_decision=decision)
     result = node_validate_evolution_budget(state)
@@ -331,6 +331,7 @@ def test_evolve_creates_child_creature(client) -> None:
     body = r.json()
 
     assert body["parent_id"] == parent_id
+    assert body["tier"] == "uncommon"
     assert body["generation"] == 2
     assert isinstance(body["stat_boosts"], dict)
     assert isinstance(body["new_ability"], bool)
@@ -363,7 +364,7 @@ def test_evolve_child_persisted_in_db(client) -> None:
         assert child is not None
         assert child.parent_id == parent_id
         assert child.generation == 2
-        assert child.tier == "common"
+        assert child.tier == "uncommon"
 
         parent_ability_count = len(
             session.exec(select(Ability).where(Ability.creature_id == parent_id)).all()

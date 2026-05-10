@@ -18,6 +18,7 @@ from backend.graphs.nodes.gemini import (
     node_analyse_history,
 )
 from backend.graphs.nodes.validators import (
+    next_tier,
     node_retry_evolution_patch,
     node_validate_evolution_budget,
     route_after_evolution_validate,
@@ -34,6 +35,7 @@ class EvolutionResult:
     creature_id: str
     parent_id: str
     name: str
+    tier: str
     generation: int
     stat_boosts: dict[str, int]
     new_ability: bool
@@ -151,6 +153,7 @@ def run_evolution_graph(
         creature_id=child_id,
         parent_id=parent_creature["id"],
         name=parent_creature["name"],
+        tier=next_tier(parent_creature["tier"]),
         generation=parent_creature["generation"] + 1,
         stat_boosts=decision.get("stat_boosts", {}),
         new_ability=bool(final_state.get("evolution_new_ability")),

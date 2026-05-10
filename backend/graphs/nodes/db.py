@@ -109,15 +109,16 @@ def make_write_evolution_node(
             new_stats = {k: v + boosts.get(k, 0) for k, v in parent.stats.items()}
             new_lore = state.get("evolution_updated_lore") or parent.lore
 
-            from backend.graphs.nodes.validators import TIER_BUDGETS
+            from backend.graphs.nodes.validators import TIER_BUDGETS, next_tier
 
-            _, _, max_ability_slots = TIER_BUDGETS[parent.tier]
+            child_tier = next_tier(parent.tier)
+            _, _, max_ability_slots = TIER_BUDGETS[child_tier]
 
             child_id = shortuuid.uuid()
             child = Creature(
                 id=child_id,
                 name=parent.name,
-                tier=parent.tier,
+                tier=child_tier,
                 element=parent.element,
                 generation=parent.generation + 1,
                 parent_id=parent.id,

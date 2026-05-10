@@ -92,6 +92,67 @@ def test_generate_creature_applies_preferred_name(client) -> None:
     assert detail.json()["name"] == preferred
 
 
+def test_generate_creature_accepts_selected_abilities(client) -> None:
+    response = client.post(
+        "/creatures/generate",
+        json={
+            "seed_params": {
+                "element": "fire",
+                "archetype": "berserker",
+                "tier": "common",
+                "biome": "volcanic",
+                "stat_budget": 80,
+            },
+            "selected_abilities": [
+                {
+                    "name": "Ember Arc",
+                    "type": "fire",
+                    "energy_cost": 12,
+                    "cooldown": 2,
+                    "effect": "damage",
+                    "description": "A blazing arc of flame sears the target.",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+
+    detail = client.get(f"/creatures/{payload['creature_id']}")
+    assert detail.status_code == 200
+    abilities = detail.json()["abilities"]
+    assert len(abilities) == 1
+    assert abilities[0]["name"] == "Ember Arc"
+
+
+def test_generate_creature_rejects_selected_abilities_with_wrong_type(client) -> None:
+    response = client.post(
+        "/creatures/generate",
+        json={
+            "seed_params": {
+                "element": "fire",
+                "archetype": "berserker",
+                "tier": "common",
+                "biome": "volcanic",
+                "stat_budget": 80,
+            },
+            "selected_abilities": [
+                {
+                    "name": "Frost Lock",
+                    "type": "ice",
+                    "energy_cost": 14,
+                    "cooldown": 2,
+                    "effect": "slow",
+                    "description": "Glacial chains sap the target's speed.",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # GET /creatures
 # ---------------------------------------------------------------------------

@@ -13,6 +13,36 @@
     rare: 125,
     legendary: 160,
   };
+  const EVOLUTION_WIN_THRESHOLD = 3;
+  const EVOLVE_COOLDOWN_SECONDS = 2;
+  const TIER_MAX_SLOTS: Record<string, number> = {
+    common: 2,
+    uncommon: 3,
+    rare: 4,
+    legendary: 5,
+  };
+
+  const AbilityTemplateSchema = z.object({
+    name: z.string(),
+    type: z.string(),
+    energy_cost: z.number(),
+    cooldown: z.number(),
+    effect: z.string(),
+    description: z.string(),
+  });
+  const AbilityOptionsResponseSchema = z.record(z.array(AbilityTemplateSchema));
+
+  const EvolveResponseSchema = z.object({
+    child_id: z.string(),
+    parent_id: z.string(),
+    name: z.string(),
+    tier: z.string(),
+    generation: z.number(),
+    stat_boosts: z.record(z.number()),
+    new_ability: z.boolean(),
+    retry_count: z.number(),
+    graph_state: z.record(z.unknown()),
+  });
 
   const GenerateResponseSchema = z.object({
     creature_id: z.string(),
@@ -26,6 +56,8 @@
   });
 
   type GenerateResponse = z.infer<typeof GenerateResponseSchema>;
+  type AbilityTemplate = z.infer<typeof AbilityTemplateSchema>;
+  type EvolveResponse = z.infer<typeof EvolveResponseSchema>;
   type CreatureDetail = z.infer<typeof CreatureDetailSchema>;
   type CreatureSummary = z.infer<typeof CreatureSummarySchema>;
 
@@ -40,13 +72,67 @@
   let errorMessage = '';
   let latest: GenerateResponse | null = null;
   let latestDetail: CreatureDetail | null = null;
+  let abilityOptionsByElement: Record<string, AbilityTemplate[]> = {};
+  let selectedAbilityNames: string[] = [];
+
+  let evolving = false;
+  let evolveTargetId = '';
+  let evolveError = '';
+  let evolveResult: EvolveResponse | null = null;
+  let evolveCooldownSeconds = 0;
   let activeCreatures: CreatureSummary[] = [];
 
   $: genBudget = TIER_BUDGETS[genTier] ?? 80;
+  $: maxAbilitySlots = TIER_MAX_SLOTS[genTier] ?? 2;
+  $: abilityOptions = abilityOptionsByElement[genElement] ?? [];
+  $: selectedAbilityNames = selectedAbilityNames
+    .filter((name) => abilityOptions.some((ability) => ability.name === name))
+    .slice(0, maxAbilitySlots);
+  $: selectedAbilities = abilityOptions.filter((ability) => selectedAbilityNames.includes(ability.name));
   $: latestCreatureId = latest?.creature_id ?? '';
   $: createdInActivePool = latestCreatureId
     ? activeCreatures.some((creature) => creature.id === latestCreatureId)
     : false;
+
+  $: if (!evolveTargetId && activeCreatures.length > 0) {
+    evolveTargetId = activeCreatures[0].id;
+  }
+  $: if (evolveTargetId && !activeCreatures.some((creature) => creature.id === evolveTargetId)) {
+    evolveTargetId = activeCreatures[0]?.id ?? '';
+  }
+  $: evolveTarget = activeCreatures.find((creature) => creature.id === evolveTargetId) ?? null;
+  $: winsNeeded = evolveTarget
+    ? Math.max(0, EVOLUTION_WIN_THRESHOLD - evolveTarget.wins)
+    : EVOLUTION_WIN_THRESHOLD;
+  $: canEvolveTarget = Boolean(evolveTarget)
+    && winsNeeded === 0
+    && !evolving
+    && evolveCooldownSeconds === 0;
+
+  function toggleAbility(name: string): void {
+    if (selectedAbilityNames.includes(name)) {
+      selectedAbilityNames = selectedAbilityNames.filter((abilityName) => abilityName !== name);
+      return;
+    }
+
+    if (selectedAbilityNames.length >= maxAbilitySlots) {
+      return;
+    }
+
+    selectedAbilityNames = [...selectedAbilityNames, name];
+  }
+
+  async function loadAbilityOptions(): Promise<void> {
+    const result = await get('/creatures/ability-options', AbilityOptionsResponseSchema);
+    result.match(
+      (payload) => {
+        abilityOptionsByElement = payload;
+      },
+      () => {
+        abilityOptionsByElement = {};
+      },
+    );
+  }
 
   async function loadActiveCreatures(): Promise<void> {
     const result = await get('/creatures?limit=30&status=active', z.array(CreatureSummarySchema));
@@ -70,6 +156,7 @@
       '/creatures/generate',
       {
         preferred_name: preferredName.trim() || undefined,
+        selected_abilities: selectedAbilities,
         seed_params: {
           element: genElement,
           tier: genTier,
@@ -107,8 +194,46 @@
     generating = false;
   }
 
-  onMount(async () => {
-    await loadActiveCreatures();
+  async function evolveCreature(): Promise<void> {
+    if (!evolveTargetId || !canEvolveTarget) {
+      return;
+    }
+
+    evolving = true;
+    evolveError = '';
+    evolveResult = null;
+
+    const response = await post(`/creatures/${evolveTargetId}/evolve`, {}, EvolveResponseSchema);
+    await response.match(
+      async (payload) => {
+        evolveResult = payload;
+        evolveCooldownSeconds = EVOLVE_COOLDOWN_SECONDS;
+        await loadActiveCreatures();
+      },
+      (err) => {
+        evolveError = err.message;
+        evolveCooldownSeconds = EVOLVE_COOLDOWN_SECONDS;
+      },
+    );
+
+    evolving = false;
+  }
+
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (evolveCooldownSeconds > 0) {
+        evolveCooldownSeconds -= 1;
+      }
+    }, 1000);
+
+    void (async () => {
+      await loadAbilityOptions();
+      await loadActiveCreatures();
+    })();
+
+    return () => {
+      clearInterval(timer);
+    };
   });
 </script>
 
@@ -164,6 +289,31 @@
       <input type="checkbox" bind:checked={showStatPreview} />
       <span>Show stat preview after generation</span>
     </label>
+
+    <div class="ability-picker">
+      <div class="ability-head">
+        <h4>Choose Abilities</h4>
+        <span>{selectedAbilityNames.length}/{maxAbilitySlots} selected</span>
+      </div>
+      {#if abilityOptions.length === 0}
+        <p class="empty">No ability options loaded for {genElement}.</p>
+      {:else}
+        <div class="ability-grid">
+          {#each abilityOptions as ability}
+            <button
+              type="button"
+              class="ability-btn"
+              class:selected={selectedAbilityNames.includes(ability.name)}
+              on:click={() => toggleAbility(ability.name)}
+              disabled={!selectedAbilityNames.includes(ability.name) && selectedAbilityNames.length >= maxAbilitySlots}
+            >
+              <span class="ability-name">{ability.name}</span>
+              <span class="ability-meta">{ability.effect} • {ability.energy_cost} EN • CD {ability.cooldown}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
 
     <button
       class="generate-btn"
@@ -229,6 +379,38 @@
 
   <section class="panel pool-panel">
     <h3>Active Pool Snapshot</h3>
+    <div class="evolve-tools">
+      <label>
+        <span>Evolve Creature</span>
+        <select bind:value={evolveTargetId}>
+          {#each activeCreatures as creature}
+            <option value={creature.id}>
+              {creature.name} ({creature.tier}) · {creature.wins}W {creature.losses}L
+            </option>
+          {/each}
+        </select>
+      </label>
+      <button class="generate-btn" on:click={evolveCreature} disabled={!canEvolveTarget}>
+        {evolving ? 'Evolving...' : 'Evolve Selected'}
+      </button>
+      {#if evolveTarget && winsNeeded > 0}
+        <p class="evolve-hint">Needs {winsNeeded} more win(s) to evolve.</p>
+      {/if}
+      {#if evolveCooldownSeconds > 0}
+        <p class="evolve-hint">Evolve available again in {evolveCooldownSeconds}s.</p>
+      {/if}
+      {#if evolveError}
+        <p class="error">{evolveError}</p>
+      {/if}
+      {#if evolveResult}
+        <p class="evolve-result">
+          Evolved {evolveResult.name} to
+          <span style="color:{tierColor(evolveResult.tier)}">{evolveResult.tier}</span>
+          (generation {evolveResult.generation}).
+        </p>
+      {/if}
+    </div>
+
     {#if activeCreatures.length === 0}
       <p class="empty">No active creatures loaded.</p>
     {:else}
@@ -238,7 +420,7 @@
             <span class="c-name">{creature.name}</span>
             <span class="c-meta" style="color:{tierColor(creature.tier)}">{creature.tier}</span>
             <span class="c-meta" style="color:{elementColor(creature.element)}">{creature.element}</span>
-            <span class="c-score">{creature.wins}W {creature.losses}L</span>
+            <span class="c-score">G{creature.generation} · {creature.wins}W {creature.losses}L</span>
           </li>
         {/each}
       </ul>
@@ -320,6 +502,73 @@
     text-transform: none;
     letter-spacing: 0;
     font-size: 12px;
+    color: var(--text-mid);
+  }
+
+  .ability-picker {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    background: var(--bg);
+  }
+
+  .ability-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .ability-head h4 {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  .ability-head span {
+    font-size: 11px;
+    color: var(--text-mid);
+  }
+
+  .ability-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+    max-height: 180px;
+    overflow: auto;
+  }
+
+  .ability-btn {
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--text);
+    padding: 7px 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .ability-btn.selected {
+    border-color: var(--border-hi);
+    box-shadow: inset 0 0 0 1px var(--border-hi);
+  }
+
+  .ability-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .ability-name {
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  .ability-meta {
+    font-size: 10px;
     color: var(--text-mid);
   }
 
@@ -432,6 +681,30 @@
     gap: 4px;
     max-height: 340px;
     overflow: auto;
+  }
+
+  .evolve-tools {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    padding: 8px;
+    margin-bottom: 10px;
+  }
+
+  .evolve-tools .generate-btn {
+    margin-top: 8px;
+  }
+
+  .evolve-result {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: var(--text-mid);
+  }
+
+  .evolve-hint {
+    margin: 8px 0 0;
+    font-size: 11px;
+    color: var(--text-mid);
   }
 
   .pool-panel li {

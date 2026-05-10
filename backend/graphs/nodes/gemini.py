@@ -284,7 +284,10 @@ class RealGeminiProvider:
         simulation_snapshot: dict[str, Any],
     ) -> list[str]:
         from backend.graphs.nodes.concept_generator import generate_commentary_local
-        rng = Random(f"{trigger_event}:{len(narrative_threads)}:{simulation_snapshot.get('total_fights', 0)}")
+        rng = Random(
+            f"{trigger_event}:{len(narrative_threads)}:"
+            f"{simulation_snapshot.get('total_fights', 0)}"
+        )
         return generate_commentary_local(trigger_event, narrative_threads, simulation_snapshot, rng)
 
 
@@ -404,7 +407,10 @@ class MockGeminiProvider:
         simulation_snapshot: dict[str, Any],
     ) -> list[str]:
         from backend.graphs.nodes.concept_generator import generate_commentary_local
-        rng = Random(f"{trigger_event}:{len(narrative_threads)}:{simulation_snapshot.get('total_fights', 0)}")
+        rng = Random(
+            f"{trigger_event}:{len(narrative_threads)}:"
+            f"{simulation_snapshot.get('total_fights', 0)}"
+        )
         return generate_commentary_local(trigger_event, narrative_threads, simulation_snapshot, rng)
 
 
@@ -451,8 +457,10 @@ def make_stats_node(
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     def node_generate_stats(state: dict[str, Any]) -> dict[str, Any]:
         generated = provider.generate_stats(state["seed_params"], state["concept"])
+        selected_abilities = state["seed_params"].get("selected_abilities") or []
+        abilities = selected_abilities if selected_abilities else generated.abilities
         logger.bind(stage="stats_generated").info("creature_factory | stats generated")
-        return {"stats": generated.stats, "abilities": generated.abilities}
+        return {"stats": generated.stats, "abilities": abilities}
 
     return node_generate_stats
 

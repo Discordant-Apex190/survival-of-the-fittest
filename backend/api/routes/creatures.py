@@ -10,7 +10,8 @@ from backend.db.models import Ability, Creature, Fight, Taunt
 from backend.db.session import get_session
 from backend.graphs.creature_factory import run_creature_factory_graph
 from backend.graphs.evolution import EVOLUTION_WIN_THRESHOLD, run_evolution_graph
-from backend.graphs.nodes.validators import SeedParams
+from backend.graphs.nodes.stat_generator import ABILITY_MATRIX
+from backend.graphs.nodes.validators import AbilityPayload, SeedParams
 from backend.graphs.rival import RIVAL_DOMINANCE_THRESHOLD, run_rival_graph
 
 router = APIRouter(prefix="/creatures", tags=["creatures"])
@@ -66,6 +67,7 @@ class CreatureDetail(CreatureSummary):
 class GenerateCreatureRequest(BaseModel):
     seed_params: SeedParams
     preferred_name: str | None = Field(default=None, max_length=30)
+    selected_abilities: list[AbilityPayload] = Field(default_factory=list)
 
 
 class GenerateCreatureResponse(BaseModel):
@@ -92,6 +94,15 @@ class LineageNode(BaseModel):
     rival_of: str | None
 
 
+class AbilityTemplateOut(BaseModel):
+    name: str
+    type: str
+    energy_cost: int
+    cooldown: int
+    effect: str
+    description: str
+
+
 # ---------------------------------------------------------------------------
 # POST /creatures/generate
 # ---------------------------------------------------------------------------
@@ -104,8 +115,12 @@ def generate_creature(
     payload: GenerateCreatureRequest,
     session: Annotated[Session, Depends(get_session)],
 ) -> GenerateCreatureResponse:
+    seed_params = payload.seed_params.model_dump()
+    if payload.selected_abilities:
+        seed_params["selected_abilities"] = [a.model_dump() for a in payload.selected_abilities]
+
     try:
-        result = run_creature_factory_graph(session, seed_params=payload.seed_params.model_dump())
+        result = run_creature_factory_graph(session, seed_params=seed_params)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -204,6 +219,19 @@ def get_lineage(
 
 
 # ---------------------------------------------------------------------------
+# GET /creatures/ability-options  — must be before /{creature_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ability-options", response_model=dict[str, list[AbilityTemplateOut]])
+def get_ability_options() -> dict[str, list[AbilityTemplateOut]]:
+    return {
+        element: [AbilityTemplateOut(**ability) for ability in options]
+        for element, options in ABILITY_MATRIX.items()
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /creatures/{creature_id}
 # ---------------------------------------------------------------------------
 
@@ -267,6 +295,7 @@ class EvolveCreatureResponse(BaseModel):
     child_id: str
     parent_id: str
     name: str
+    tier: str
     generation: int
     stat_boosts: dict[str, int]
     new_ability: bool
@@ -344,6 +373,7 @@ def evolve_creature(
         child_id=result.creature_id,
         parent_id=result.parent_id,
         name=result.name,
+        tier=result.tier,
         generation=result.generation,
         stat_boosts=result.stat_boosts,
         new_ability=result.new_ability,

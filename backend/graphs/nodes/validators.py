@@ -13,6 +13,19 @@ TIER_BUDGETS: dict[str, tuple[int, int, int]] = {
     "legendary": (160, 50, 5),
 }
 
+TIER_ORDER: tuple[str, ...] = ("common", "uncommon", "rare", "legendary")
+
+
+def next_tier(tier: str) -> str:
+    """Return the next tier in the progression, capped at legendary."""
+    try:
+        idx = TIER_ORDER.index(tier)
+    except ValueError:
+        return "common"
+    if idx >= len(TIER_ORDER) - 1:
+        return TIER_ORDER[-1]
+    return TIER_ORDER[idx + 1]
+
 
 class SeedParams(BaseModel):
     element: Literal["fire", "void", "nature", "ice", "electric"]
@@ -112,6 +125,14 @@ def validate_generation_payload(
             f"got {len(parsed_abilities)}"
         )
 
+    for ability in parsed_abilities:
+        if ability.type != seed.element:
+            errors.append(
+                "abilities: "
+                f"ability '{ability.name}' has type '{ability.type}' "
+                f"but creature element is '{seed.element}'"
+            )
+
     if not taunts:
         errors.append("taunts: at least one trigger set is required")
     for trigger, lines in taunts.items():
@@ -190,7 +211,7 @@ EVOLUTION_BONUS = 10  # extra stat budget allowed after each evolution
 def node_validate_evolution_budget(state: dict[str, Any]) -> dict[str, Any]:
     parent = state["parent_creature"]
     decision = state["evolution_decision"]
-    tier = parent["tier"]
+    tier = next_tier(parent["tier"])
     budget, max_single, _ = TIER_BUDGETS[tier]
 
     current_stats: dict[str, int] = parent["stats"]
