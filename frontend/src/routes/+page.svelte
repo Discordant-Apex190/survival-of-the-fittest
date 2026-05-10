@@ -27,6 +27,7 @@
   let votePending = false;
   let showBetResultModal = false;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  let tokenToastTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Vote progress during betting window
   $: votesIn   = $voteStore.fight_id === $fightStore.fight_id
@@ -69,6 +70,13 @@
   // Reset local betPlaced when active bet is gone
   $: if (!$betStore.active) betPlaced = false;
 
+  $: if ($betStore.last_token_earned > 0) {
+    if (tokenToastTimer) clearTimeout(tokenToastTimer);
+    tokenToastTimer = setTimeout(() => {
+      betStore.clearTokenEarnedToast();
+    }, 1800);
+  }
+
   // ---------------------------------------------------------------------------
   // Tick / auto-tick
   // ---------------------------------------------------------------------------
@@ -86,6 +94,7 @@
   onDestroy(() => {
     stopAuto();
     if (settleTimer) clearTimeout(settleTimer);
+    if (tokenToastTimer) clearTimeout(tokenToastTimer);
   });
 
   function closeBetResultModal() {
@@ -239,6 +248,7 @@
       <span class="token-icon">◆</span>
       <span class="token-count">{$betStore.tokens.toLocaleString()}</span>
       <span class="token-label">tokens</span>
+      <span class="token-earned">today +{$betStore.daily_earned_today}</span>
       <button
         class="reset-btn"
         on:click={() => betStore.reset()}
@@ -415,6 +425,12 @@
   </div>
 {/if}
 
+{#if $betStore.last_token_earned > 0}
+  <div class="token-earned-toast" role="status" aria-live="polite" aria-atomic="true">
+    Tokens Earned: +{$betStore.last_token_earned}
+  </div>
+{/if}
+
 <style>
   .page {
     display: grid;
@@ -544,11 +560,32 @@
   .token-icon { color: var(--electric); font-size: 12px; }
   .token-count { color: var(--text); font-size: 14px; font-weight: 700; }
   .token-label { color: var(--text-dim); font-size: 9px; flex: 1; }
+  .token-earned {
+    color: var(--pass);
+    font-size: 9px;
+    white-space: nowrap;
+    margin-right: 4px;
+  }
   .reset-btn {
     background: none; border: none; color: var(--text-dim); font-size: 12px;
     cursor: pointer; padding: 2px 4px; border-radius: 3px;
   }
   .reset-btn:hover { color: var(--text); background: var(--border); }
+
+  .token-earned-toast {
+    position: fixed;
+    right: 14px;
+    bottom: 14px;
+    z-index: 62;
+    background: var(--card);
+    border: 1px solid var(--pass);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 11px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    box-shadow: 0 10px 26px #0000005c;
+  }
 
   .bet-modal-backdrop {
     position: fixed;

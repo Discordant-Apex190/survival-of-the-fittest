@@ -56,6 +56,13 @@ const VoteUpdateSchema = z.object({
   votes: z.record(z.number()),
 });
 
+const TokenEarnedSchema = z.object({
+  type: z.literal('token_earned'),
+  fight_id: z.string(),
+  amount: z.number().int().positive(),
+  reason: z.string(),
+});
+
 // All WS payloads pass through this before touching any store.
 export const WsEventSchema = z.discriminatedUnion('type', [
   FightPreviewSchema,
@@ -65,6 +72,7 @@ export const WsEventSchema = z.discriminatedUnion('type', [
   LeaderboardUpdateSchema,
   CommentarySchema,
   VoteUpdateSchema,
+  TokenEarnedSchema,
 ]);
 
 export type WsEvent        = z.infer<typeof WsEventSchema>;
@@ -75,3 +83,4 @@ export type WsFightEnd     = z.infer<typeof FightEndSchema>;
 export type WsLeaderboard  = z.infer<typeof LeaderboardUpdateSchema>;
 export type WsCommentary   = z.infer<typeof CommentarySchema>;
 export type WsVoteUpdate   = z.infer<typeof VoteUpdateSchema>;
+export type WsTokenEarned  = z.infer<typeof TokenEarnedSchema>;

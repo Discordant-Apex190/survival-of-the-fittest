@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from backend.db.models import Ability, Creature, Fight, Taunt
@@ -65,6 +65,7 @@ class CreatureDetail(CreatureSummary):
 
 class GenerateCreatureRequest(BaseModel):
     seed_params: SeedParams
+    preferred_name: str | None = Field(default=None, max_length=30)
 
 
 class GenerateCreatureResponse(BaseModel):
@@ -111,9 +112,19 @@ def generate_creature(
             detail=str(exc),
         ) from exc
 
+    preferred_name = (payload.preferred_name or "").strip()
+    response_name = result.name
+    if preferred_name:
+        creature = session.get(Creature, result.creature_id)
+        if creature is not None:
+            creature.name = preferred_name
+            session.add(creature)
+            session.commit()
+            response_name = preferred_name
+
     return GenerateCreatureResponse(
         creature_id=result.creature_id,
-        name=result.name,
+        name=response_name,
         tier=result.tier,
         element=result.element,
         ability_count=result.ability_count,

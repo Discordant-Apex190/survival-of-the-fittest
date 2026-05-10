@@ -66,6 +66,32 @@ def test_generate_creature_endpoint_rejects_invalid_budget(client) -> None:
     assert response.status_code == 422
 
 
+def test_generate_creature_applies_preferred_name(client) -> None:
+    preferred = "Ash Warden"
+    budget = 80
+    response = client.post(
+        "/creatures/generate",
+        json={
+            "preferred_name": preferred,
+            "seed_params": {
+                "element": "fire",
+                "archetype": "berserker",
+                "tier": "common",
+                "biome": "volcanic",
+                "stat_budget": budget,
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["name"] == preferred
+
+    detail = client.get(f"/creatures/{payload['creature_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["name"] == preferred
+
+
 # ---------------------------------------------------------------------------
 # GET /creatures
 # ---------------------------------------------------------------------------

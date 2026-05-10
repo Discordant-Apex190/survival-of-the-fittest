@@ -5,6 +5,7 @@
 
   const NAV = [
     { href: '/',          label: 'Spectator' },
+    { href: '/builder',   label: 'Builder'   },
     { href: '/lineage',   label: 'Lineage'   },
     { href: '/replay',    label: 'Replay'    },
     { href: '/analytics', label: 'Analytics' },

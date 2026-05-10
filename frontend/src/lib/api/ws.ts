@@ -84,6 +84,7 @@ export function connect(): void {
         fightStore.end(ev);
         betStore.onFightEnd(ev, names);
       })
+      .with({ type: 'token_earned' }, (ev) => betStore.onTokenEarned(ev))
       .with({ type: 'leaderboard_update' }, (ev) => leaderboardStore.set(ev.data))
       .with({ type: 'vote_update' },        (ev) => voteStore.update(ev.fight_id, ev.votes))
       .with({ type: 'commentary' },         () => { /* commentary removed */ })

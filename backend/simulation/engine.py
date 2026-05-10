@@ -30,6 +30,8 @@ _ELEMENTS = ["fire", "void", "nature", "ice", "electric"]
 _ARCHETYPES = ["berserker", "sentinel", "trickster", "stalker", "guardian"]
 _BIOMES = ["volcanic", "deep forest", "void rift", "tundra", "storm plateau"]
 
+BASE_FIGHT_TOKEN_REWARD = 50
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -199,6 +201,18 @@ def _load_abilities(session: Session, creature_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def apply_token_rewards(*, fight_id: str, amount: int = BASE_FIGHT_TOKEN_REWARD) -> None:
+    """Broadcast a client-side token reward event after a fight settles."""
+    manager.broadcast_sync(
+        {
+            "type": "token_earned",
+            "fight_id": fight_id,
+            "amount": amount,
+            "reason": "fight_completion",
+        }
+    )
+
+
 def step_fight(
     session: Session,
     pair: tuple[str, str],
@@ -312,6 +326,8 @@ def step_fight(
         "fight_id": fight_id,
         "winner_id": outcome.winner_id,
     })
+
+    apply_token_rewards(fight_id=fight_id)
 
     logger.bind(
         stage="fight",
