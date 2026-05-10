@@ -332,6 +332,189 @@ async function shockwaveRing(
   });
 }
 
+async function impactCrack(
+  stage: Container,
+  x: number,
+  y: number,
+  color: number,
+  ms = 280,
+): Promise<void> {
+  const g = new Graphics();
+  stage.addChild(g);
+  const spokes = 8;
+  const baseLen = 12 + Math.random() * 10;
+  let elapsed = 0;
+
+  return new Promise((resolve) => {
+    const fn = (ticker: Ticker) => {
+      elapsed += ticker.deltaMS;
+      const t = Math.min(elapsed / ms, 1);
+      const alpha = 0.8 * (1 - t);
+      const grow = 1 + t * 0.8;
+
+      g.clear();
+      for (let i = 0; i < spokes; i += 1) {
+        const a = (i / spokes) * Math.PI * 2;
+        const jitter = (Math.random() - 0.5) * 0.18;
+        const len = (baseLen + (i % 3) * 4) * grow;
+        const x2 = x + Math.cos(a + jitter) * len;
+        const y2 = y + Math.sin(a + jitter) * len;
+        g.moveTo(x, y);
+        g.lineTo(x2, y2);
+      }
+      g.stroke({ width: Math.max(0.8, 2.4 - t * 1.6), color, alpha });
+
+      if (t >= 1) {
+        stage.removeChild(g);
+        if (!g.destroyed) g.destroy();
+        Ticker.shared.remove(fn);
+        resolve();
+      }
+    };
+    Ticker.shared.add(fn);
+  });
+}
+
+async function frostNova(
+  stage: Container,
+  x: number,
+  y: number,
+  color: number,
+): Promise<void> {
+  await Promise.all([
+    shockwaveRing(stage, x, y, color, 74, 260),
+    shockwaveRing(stage, x, y, 0xffffff, 46, 180),
+  ]);
+}
+
+async function vortexField(
+  stage: Container,
+  x: number,
+  y: number,
+  color: number,
+  ms = 520,
+): Promise<void> {
+  const rings = Array.from({ length: 3 }, () => new Graphics());
+  rings.forEach((ring) => stage.addChild(ring));
+  let elapsed = 0;
+
+  return new Promise((resolve) => {
+    const fn = (ticker: Ticker) => {
+      elapsed += ticker.deltaMS;
+      const t = Math.min(elapsed / ms, 1);
+      const base = 34 + (1 - t) * 24;
+
+      rings.forEach((ring, i) => {
+        const phase = t * Math.PI * 2.1 + i * (Math.PI / 1.4);
+        const r = base + i * 8;
+        const ox = Math.cos(phase) * (10 + i * 2);
+        const oy = Math.sin(phase * 1.08) * (6 + i);
+        const a = Math.max(0, 0.52 - t * 0.48 - i * 0.08);
+
+        ring.clear();
+        ring.circle(x + ox, y + oy, r).stroke({
+          width: Math.max(0.8, 2.4 - t * 1.6),
+          color,
+          alpha: a,
+        });
+      });
+
+      if (t >= 1) {
+        rings.forEach((ring) => {
+          stage.removeChild(ring);
+          if (!ring.destroyed) ring.destroy();
+        });
+        Ticker.shared.remove(fn);
+        resolve();
+      }
+    };
+    Ticker.shared.add(fn);
+  });
+}
+
+async function plasmaBurst(
+  stage: Container,
+  x: number,
+  y: number,
+  color: number,
+): Promise<void> {
+  const core = new Graphics();
+  core.circle(0, 0, 14).fill({ color, alpha: 0.9 });
+  core.x = x;
+  core.y = y;
+  stage.addChild(core);
+
+  const sparks = Array.from({ length: 6 }, (_, i) => {
+    const g = new Graphics();
+    g.rect(-2, -10, 4, 20).fill({ color: 0xffffff, alpha: 0.88 });
+    g.x = x;
+    g.y = y;
+    g.rotation = (i / 6) * Math.PI * 2;
+    stage.addChild(g);
+    return g;
+  });
+
+  await Promise.all([
+    tweenScale(core, 1.9, 180, easeOutBack),
+    tweenTo(core, { alpha: 0 }, 180, easeOutQuad),
+    ...sparks.map((spark, i) => tweenTo(
+      spark,
+      {
+        x: x + Math.cos(spark.rotation) * (20 + i * 4),
+        y: y + Math.sin(spark.rotation) * (20 + i * 4),
+        alpha: 0,
+      },
+      190,
+      easeOutQuad,
+    )),
+  ]);
+
+  stage.removeChild(core);
+  if (!core.destroyed) core.destroy();
+  sparks.forEach((spark) => {
+    stage.removeChild(spark);
+    if (!spark.destroyed) spark.destroy();
+  });
+}
+
+async function voidRend(
+  stage: Container,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  color: number,
+): Promise<void> {
+  const slash = new Graphics();
+  stage.addChild(slash);
+  let elapsed = 0;
+  const ms = 260;
+
+  return new Promise((resolve) => {
+    const fn = (ticker: Ticker) => {
+      elapsed += ticker.deltaMS;
+      const t = Math.min(elapsed / ms, 1);
+      const e = easeOutQuad(t);
+      const ix = from.x + (to.x - from.x) * e;
+      const iy = from.y + (to.y - from.y) * e;
+      const head = 20 + t * 44;
+
+      slash.clear();
+      slash.moveTo(ix - head, iy - 6);
+      slash.lineTo(ix + head, iy + 6);
+      slash.moveTo(ix - head * 0.7, iy + 8);
+      slash.lineTo(ix + head * 0.7, iy - 8);
+      slash.stroke({ width: 2.8 - t * 1.6, color, alpha: 0.8 - t * 0.72 });
+
+      if (t >= 1) {
+        stage.removeChild(slash);
+        if (!slash.destroyed) slash.destroy();
+        Ticker.shared.remove(fn);
+        resolve();
+      }
+    };
+    Ticker.shared.add(fn);
+  });
+}
+
 async function groundDust(
   stage: Container,
   x: number,
@@ -615,6 +798,40 @@ async function playElementalProjectile(
   ]);
 }
 
+async function playEffectImpact(
+  effect: string | null | undefined,
+  stage: Container,
+  targetX: number,
+  targetY: number,
+  color: number,
+): Promise<void> {
+  if (effect === 'stun') {
+    await Promise.all([
+      plasmaBurst(stage, targetX, targetY - 18, color),
+      shockwaveRing(stage, targetX, targetY - 18, 0xf5c518, 66, 240),
+    ]);
+    return;
+  }
+
+  if (effect === 'slow') {
+    await Promise.all([
+      vortexField(stage, targetX, targetY - 18, 0x4fc3f7, 520),
+      frostNova(stage, targetX, targetY - 18, 0x4fc3f7),
+    ]);
+    return;
+  }
+
+  if (effect === 'shield_break') {
+    await Promise.all([
+      impactCrack(stage, targetX, targetY - 14, 0xf05a28, 300),
+      shockwaveRing(stage, targetX, targetY - 18, 0xf05a28, 74, 260),
+    ]);
+    return;
+  }
+
+  await shockwaveRing(stage, targetX, targetY - 18, color, 64, 240);
+}
+
 // ---------------------------------------------------------------------------
 // Element color map (for debris tint)
 // ---------------------------------------------------------------------------
@@ -742,6 +959,7 @@ export function createAnimator(
 
         if (targetSlot) {
           const dx = targetSlot.homeX - actorSlot.homeX;
+          const effect = abilityEffect ?? null;
           await playElementalProjectile(
             actorSlot.element,
             arena.stage,
@@ -749,17 +967,32 @@ export function createAnimator(
             targetSlot,
             aColor,
           );
+          if (actorSlot.element === 'void') {
+            await voidRend(
+              arena.stage,
+              { x: actorSlot.homeX, y: actorSlot.homeY - 20 },
+              { x: targetSlot.homeX, y: targetSlot.homeY - 20 },
+              aColor,
+            );
+          }
           await hitStop(55);
+
+          const physicsCount = effect === 'shield_break' ? 13 : effect === 'stun' ? 11 : effect === 'slow' ? 8 : 10;
+          const physicsStrength = effect === 'shield_break' ? 2.2 : effect === 'stun' ? 2.0 : effect === 'slow' ? 1.35 : 1.8;
+          const emitterCount = effect === 'shield_break' ? 9 : effect === 'stun' ? 8 : effect === 'slow' ? 6 : 7;
+          const emitterStrength = effect === 'shield_break' ? 1.75 : effect === 'stun' ? 1.65 : effect === 'slow' ? 1.2 : 1.5;
+
           await Promise.all([
             flashOverlay(targetSlot.sprite, aColor, 180),
             (async () => {
               await arcKnockback(targetSlot.sprite, targetSlot.homeX, targetSlot.homeY, dx * -0.5, 380);
               groundDust(arena.stage, targetSlot.homeX, targetSlot.homeY, debrisColor(targetSlot.element));
             })(),
-            Promise.resolve(physics.emit(targetSlot.homeX, targetSlot.homeY - 15, 10, aColor, 1.8)),
+            Promise.resolve(physics.emit(targetSlot.homeX, targetSlot.homeY - 15, physicsCount, aColor, physicsStrength)),
             Promise.resolve(elementEmitters.get(evt.actor_id!)?.burst(
-              targetSlot.homeX, targetSlot.homeY - 15, 7, 1.5,
+              targetSlot.homeX, targetSlot.homeY - 15, emitterCount, emitterStrength,
             )),
+            playEffectImpact(effect, arena.stage, targetSlot.homeX, targetSlot.homeY, aColor),
             shockwaveRing(arena.stage, targetSlot.homeX, targetSlot.homeY - 20, aColor, 92, 420),
           ]);
           if (abilityEffect && abilityEffect !== 'damage') {

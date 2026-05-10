@@ -25,6 +25,8 @@
   let customAmount = '';
   let betPlaced = false;
   let votePending = false;
+  let showBetResultModal = false;
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Vote progress during betting window
   $: votesIn   = $voteStore.fight_id === $fightStore.fight_id
@@ -49,9 +51,19 @@
   $: resolvedBet = ($betStore.active?.status === 'won' || $betStore.active?.status === 'lost')
     ? $betStore.active : null;
 
-  // After fight ends and bet is resolved, show result then auto-dismiss after 4s
-  $: if (resolvedBet) {
-    setTimeout(() => betStore.dismiss(), 4000);
+  // Reveal bet result only after fight has visually settled.
+  $: if ($fightStore.winner_id && !$fightStore.settled) {
+    if (settleTimer) clearTimeout(settleTimer);
+    const fightId = $fightStore.fight_id;
+    settleTimer = setTimeout(() => {
+      if (fightId) fightStore.settle(fightId);
+    }, 1450);
+  }
+
+  $: showBetResultModal = Boolean(resolvedBet && $fightStore.settled);
+
+  $: if ($fightStore.previewing) {
+    showBetResultModal = false;
   }
 
   // Reset local betPlaced when active bet is gone
@@ -73,7 +85,13 @@
 
   onDestroy(() => {
     stopAuto();
+    if (settleTimer) clearTimeout(settleTimer);
   });
+
+  function closeBetResultModal() {
+    showBetResultModal = false;
+    betStore.dismiss();
+  }
 
   async function runTick() {
     if (ticking) return;
@@ -229,16 +247,7 @@
       >↺</button>
     </div>
 
-    <!-- Bet result banner -->
-    {#if resolvedBet}
-      <div class="result-banner" class:won={resolvedBet.status === 'won'} class:lost={resolvedBet.status === 'lost'}>
-        {#if resolvedBet.status === 'won'}
-          Won! +{resolvedBet.payout} tokens
-        {:else}
-          Lost — -{resolvedBet.amount} tokens
-        {/if}
-      </div>
-    {/if}
+    <!-- Bet result modal trigger state lives here; modal itself is global overlay below -->
 
     <!-- Locked bet in-progress indicator -->
     {#if lockedBet}
@@ -385,6 +394,27 @@
   </aside>
 </div>
 
+{#if showBetResultModal && resolvedBet}
+  <div class="bet-modal-backdrop" role="presentation" on:click={closeBetResultModal}></div>
+  <div
+    class="bet-modal"
+    class:won={resolvedBet.status === 'won'}
+    class:lost={resolvedBet.status === 'lost'}
+    role="dialog"
+    aria-modal="true"
+    aria-label="Bet result"
+  >
+    <h3 class="bet-modal-title">Fight Complete</h3>
+    {#if resolvedBet.status === 'won'}
+      <p class="bet-modal-result">You won +{resolvedBet.payout} tokens</p>
+    {:else}
+      <p class="bet-modal-result">You lost -{resolvedBet.amount} tokens</p>
+    {/if}
+    <p class="bet-modal-sub">Balance: {$betStore.tokens.toLocaleString()}◆</p>
+    <button class="bet-modal-btn" on:click={closeBetResultModal}>Continue</button>
+  </div>
+{/if}
+
 <style>
   .page {
     display: grid;
@@ -520,14 +550,76 @@
   }
   .reset-btn:hover { color: var(--text); background: var(--border); }
 
-  /* Result banner */
-  .result-banner {
-    text-align: center; padding: 8px 12px; border-radius: 6px;
-    font-size: 13px; font-weight: 700;
-    animation: fadeIn 0.3s ease;
+  .bet-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: #0d0e12c9;
+    z-index: 60;
   }
-  .result-banner.won  { background: #1a3320; color: #4ade80; border: 1px solid #4ade8055; }
-  .result-banner.lost { background: #2d1515; color: #f87171; border: 1px solid #f8717155; }
+
+  .bet-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 61;
+    width: min(360px, calc(100vw - 24px));
+    background: var(--card);
+    border: 1px solid var(--border-hi);
+    border-radius: 10px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .bet-modal.won {
+    border-color: #4ade8070;
+    box-shadow: 0 0 0 1px #4ade8033, 0 18px 50px #0b1d12cc;
+  }
+
+  .bet-modal.lost {
+    border-color: #f8717170;
+    box-shadow: 0 0 0 1px #f8717133, 0 18px 50px #220f0fcc;
+  }
+
+  .bet-modal-title {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .bet-modal-result {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .bet-modal.won .bet-modal-result { color: #4ade80; }
+  .bet-modal.lost .bet-modal-result { color: #f87171; }
+
+  .bet-modal-sub {
+    font-size: 11px;
+    color: var(--text-mid);
+  }
+
+  .bet-modal-btn {
+    margin-top: 2px;
+    align-self: flex-end;
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    font-size: 11px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .bet-modal-btn:hover {
+    border-color: var(--text-mid);
+  }
 
   .locked-banner {
     text-align: center; padding: 6px 10px; border-radius: 5px;

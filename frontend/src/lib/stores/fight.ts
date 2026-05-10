@@ -14,6 +14,7 @@ interface FightState {
   prob_b:     number;
   events:     WsFightEvent[];
   winner_id:  string | null;
+  settled:    boolean;
 }
 
 const initial: FightState = {
@@ -26,6 +27,7 @@ const initial: FightState = {
   prob_b:     0.5,
   events:     [],
   winner_id:  null,
+  settled:    false,
 };
 
 function createFightStore() {
@@ -43,6 +45,7 @@ function createFightStore() {
         prob_b:     ev.prob_b,
         events:     [],
         winner_id:  null,
+        settled:    false,
       }),
     start: (ev: WsFightStart) =>
       update((s) => ({
@@ -56,6 +59,7 @@ function createFightStore() {
         prob_b:     ev.prob_b,
         events:     s.fight_id === ev.fight_id ? s.events : [],
         winner_id:  null,
+        settled:    false,
       })),
     addEvent: (ev: WsFightEvent) =>
       update((s) => {
@@ -65,7 +69,12 @@ function createFightStore() {
     end: (ev: WsFightEnd) =>
       update((s) => {
         if (!s.fight_id || s.fight_id !== ev.fight_id) return s;
-        return { ...s, active: false, previewing: false, winner_id: ev.winner_id };
+        return { ...s, active: false, previewing: false, winner_id: ev.winner_id, settled: false };
+      }),
+    settle: (fightId: string) =>
+      update((s) => {
+        if (!s.fight_id || s.fight_id !== fightId) return s;
+        return { ...s, settled: true };
       }),
     reset: () => set(initial),
   };
